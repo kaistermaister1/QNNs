@@ -67,9 +67,8 @@ os.makedirs("plots", exist_ok=True)
 # Draw and save the circuit
 qc.draw(output="mpl", style="clifford", fold=20)
 plt.suptitle("Combined Circuit")
-plt.savefig("DEMOS/plots/iris_improved_circuit.png", dpi=150, bbox_inches='tight')
+plt.savefig("DEMOS/IRIS/plots/iris_improved_circuit.png", dpi=150, bbox_inches='tight')
 plt.close()
-print("Circuit diagram saved as 'plots/iris_improved_circuit.png'")
 
 # Load in data
 iris_data = load_iris()

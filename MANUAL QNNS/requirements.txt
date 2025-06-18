@@ -3,7 +3,7 @@ qiskit-machine-learning==0.8.2
 qiskit-aer==0.17.1
 qiskit-algorithms==0.3.1
 qiskit-ibm-runtime==0.39.0
-pylatexenc==2.10.0
+pylatexenc==2.10
 numpy==2.2.6
 scipy==1.15.3
 matplotlib==3.8.4
@@ -14,4 +14,5 @@ sympy==1.14.0
 symengine==0.13.0
 rustworkx==0.16.0
 dill==0.4.0
-python-dateutil==2.9.0.post0pylatexenc==2.10
+python-dateutil==2.9.0.post0
+pylatexenc==2.10
