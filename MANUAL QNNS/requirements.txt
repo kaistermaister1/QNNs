@@ -14,5 +14,4 @@ sympy==1.14.0
 symengine==0.13.0
 rustworkx==0.16.0
 dill==0.4.0
-python-dateutil==2.9.0.post0
-pylatexenc==2.10
+python-dateutil==2.9.0.post0pylatexenc==2.10
