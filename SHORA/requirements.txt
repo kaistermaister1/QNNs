@@ -1,0 +1,14 @@
+# Core scientific computing
+numpy
+pandas
+matplotlib
+seaborn
+ipython
+
+# Machine learning
+scikit-learn
+
+# Quantum computing
+qiskit==1.4.2
+qiskit-algorithms
+qiskit-machine-learning==0.8.3
