@@ -54,28 +54,13 @@ OPTIMIZER_CHOICE = "ADAM"  # or "COBYLA"
 
 ## 📊 Expected Results
 
-### `babyshorai.py` (Recommended)
+### `babyshorai.py` (Designed by AI)
 - **Training Time**: 30-90 seconds
-- **Expected Accuracy**: 60-90% (depending on convergence)
-- **Loss Behavior**: Drops from ~3.0 to <1.0
+- **Expected Accuracy**: ~5% (depending on convergence)
 
-### `babyshora2.2.py` (Learning Exercise)
+### `babyshora2.2.py` (Best performing)
 - **Training Time**: 60-180 seconds  
-- **Expected Accuracy**: 0-30% (often fails to converge)
-- **Loss Behavior**: Stays flat around same value (plateau problem)
-
-## 🧠 Key Insights
-
-### Why Earlier Versions Failed
-1. **Hard thresholding** created non-differentiable loss landscapes
-2. **Insufficient circuit expressivity** (2 qubits, few parameters)
-3. **Squared error on discrete outputs** provided poor gradients
-
-### Why `babyshorai.py` Works
-1. **Smooth cross-entropy loss** with proper gradients
-2. **4-qubit circuit** with entangling ansatz (16 parameters)
-3. **One-hot encoding** matches QNN probability output structure
-4. **Angle encoding** properly embeds binary features
+- **Expected Accuracy**: 10-30%
 
 ## 🎯 Factorization Mapping
 

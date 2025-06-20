@@ -37,10 +37,9 @@ Educational notebook demonstrating the difference between Qiskit's Estimator and
 
 ### `SHORA/` - Quantum Factorization Experiments
 QNN-based approaches to learning integer factorization, inspired by Shor's algorithm:
-- **babyshora series**: Evolution from 2-qubit proof-of-concept to advanced 6-parameter models
-- **babyshorai.py**: **Recommended** 4-qubit implementation with cross-entropy loss
+- **babyshora series**: 4 qubit and 2 qubit designs
+- **babyshorai.py**: **Recommended** 4-qubit design made by AI
 - Demonstrates common QNN pitfalls (hard thresholding, insufficient expressivity) and solutions
-- Comprehensive comparison of loss functions, feature encodings, and circuit architectures
 
 ## 🔧 Requirements
 
