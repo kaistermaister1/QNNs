@@ -4,10 +4,11 @@ A comprehensive collection of Quantum Neural Network implementations and experim
 
 ## 🎯 Project Overview
 
-This repository contains practical implementations of QNNs across three main categories:
+git This repository contains practical implementations of QNNs across four main categories:
 
 - **Manual QNN Implementations** - Custom quantum circuits and parameter optimization
 - **Practical Demos** - Real-world classification problems and comparisons
+- **Quantum Factorization** - QNN approaches to integer factorization learning
 - **Experimental Studies** - Performance analysis and architectural comparisons
 
 ## 📁 Project Structure
@@ -33,6 +34,13 @@ Systematic study of QNN performance on 2D point classification:
 
 #### `Estimator_Sampler_demo.ipynb`
 Educational notebook demonstrating the difference between Qiskit's Estimator and Sampler primitives.
+
+### `SHORA/` - Quantum Factorization Experiments
+QNN-based approaches to learning integer factorization, inspired by Shor's algorithm:
+- **babyshora series**: Evolution from 2-qubit proof-of-concept to advanced 6-parameter models
+- **babyshorai.py**: **Recommended** 4-qubit implementation with cross-entropy loss
+- Demonstrates common QNN pitfalls (hard thresholding, insufficient expressivity) and solutions
+- Comprehensive comparison of loss functions, feature encodings, and circuit architectures
 
 ## 🔧 Requirements
 
@@ -70,11 +78,23 @@ python "MANUAL QNNS/QUBELLA_V1/1QUBITQNN.py"
 python "MANUAL QNNS/QUBELLA_V1.1/1.1QUBITQNN.py"
 ```
 
+### Explore Quantum Factorization
+```bash
+# Best QNN factorization model (4-qubit, cross-entropy loss)
+python "SHORA/babyshorai.py"
+
+# Compare with problematic approaches
+python "SHORA/babyshora2.2.py"
+```
+
 ## 📊 Key Findings
 
 - **Fewer qubits can outperform more qubits** when feature encoding is properly designed
 - **Custom feature maps** suited to specific data structures perform better than generic approaches
 - **Direct angle encoding** often superior to correlation-based feature maps for independent features
+- **Loss function design is critical** - hard thresholding creates flat optimization landscapes
+- **Cross-entropy loss** provides meaningful gradients vs. discrete loss functions
+- **Circuit expressivity matters** - sufficient parameters needed to represent target mappings
 - **Manual QNN implementations** provide fine-grained control over circuit design and optimization
 
 ## 📈 Performance Highlights
@@ -82,6 +102,7 @@ python "MANUAL QNNS/QUBELLA_V1.1/1.1QUBITQNN.py"
 - **Line Classification**: Custom 2-qubit model achieved 88% accuracy vs 52% for standard Qiskit approach
 - **IRIS Classification**: Multiple architectures tested with comprehensive statistical analysis
 - **QUBELLA**: Detailed optimization landscapes and quantum state visualizations
+- **SHORA Factorization**: 4-qubit model with cross-entropy achieves 60-90% accuracy vs 0-30% for threshold-based approaches
 
 ## 📄 License
 
