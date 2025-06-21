@@ -18,8 +18,10 @@ from qiskit_algorithms.utils import algorithm_globals
 from qiskit_machine_learning.algorithms.classifiers import NeuralNetworkClassifier
 from qiskit_machine_learning.neural_networks import EstimatorQNN
 from qiskit.primitives import Estimator
-from qiskit.circuit.library import RealAmplitudes
+from qiskit.circuit.library import RealAmplitudes, ZZFeatureMap
+from qiskit_machine_learning.circuit.library import QNNCircuit
 import warnings
+import argparse
 
 warnings.filterwarnings('ignore')
 
@@ -141,188 +143,265 @@ def plot_loss_landscape(W1, W2, loss_grid, title, initial_weights=None, final_we
 # --- Main Script ---
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Generate 3D loss landscape visualizations for QNN models.")
+    parser.add_argument(
+        '--models', 
+        nargs='+', 
+        type=int, 
+        default=[1, 2, 3, 4], 
+        help="A list of model numbers to plot. Choices: 1, 2, 3, 4. Default: all."
+    )
+    args = parser.parse_args()
+
     estimator = Estimator()
     # Generate a single, fixed dataset for consistent landscapes
     X_train, y_train = generate_dataset()
     
-    # Define a fixed initial starting point for the optimizer
+    # Define a fixed initial starting point for the optimizer for 2-param models
     initial_weights = np.array([0.5, -0.5])
 
-
-    # ============================================================================
-    # MODEL 1: 1-Qubit Angle Embedding (RY + RZ)
-    # ============================================================================
-    print("\n--- Processing Model 1: 1-Qubit Angle Embedding (RY + RZ) ---")
-
-    feature_map_1 = QuantumCircuit(1, name="FeatureMap1")
-    params_1 = [Parameter("input1"), Parameter("input2")]
-    feature_map_1.ry(params_1[0], 0)
-    feature_map_1.rz(params_1[1], 0)
-
-    ansatz_1 = QuantumCircuit(1, name="Ansatz1")
-    a_params_1 = [Parameter("theta1"), Parameter("theta2")]
-    ansatz_1.rz(a_params_1[0], 0)
-    ansatz_1.ry(a_params_1[1], 0)
+    if 1 in args.models:
+        # ============================================================================
+        # MODEL 1: 1-Qubit Angle Embedding (RY + RZ)
+        # ============================================================================
+        print("\n--- Processing Model 1: 1-Qubit Angle Embedding (RY + RZ) ---")
     
-    qc_1 = QuantumCircuit(1)
-    qc_1.compose(feature_map_1, inplace=True)
-    qc_1.compose(ansatz_1, inplace=True)
+        feature_map_1 = QuantumCircuit(1, name="FeatureMap1")
+        params_1 = [Parameter("input1"), Parameter("input2")]
+        feature_map_1.ry(params_1[0], 0)
+        feature_map_1.rz(params_1[1], 0)
     
-    estimator_qnn_1 = EstimatorQNN(
-        circuit=qc_1,
-        estimator=estimator,
-        input_params=feature_map_1.parameters,
-        weight_params=ansatz_1.parameters
-    )
+        ansatz_1 = QuantumCircuit(1, name="Ansatz1")
+        a_params_1 = [Parameter("theta1"), Parameter("theta2")]
+        ansatz_1.rz(a_params_1[0], 0)
+        ansatz_1.ry(a_params_1[1], 0)
+        
+        qc_1 = QuantumCircuit(1)
+        qc_1.compose(feature_map_1, inplace=True)
+        qc_1.compose(ansatz_1, inplace=True)
+        
+        estimator_qnn_1 = EstimatorQNN(
+            circuit=qc_1,
+            estimator=estimator,
+            input_params=feature_map_1.parameters,
+            weight_params=ansatz_1.parameters
+        )
+        
+        # Train the model to find the final weights
+        classifier1 = NeuralNetworkClassifier(
+            estimator_qnn_1, 
+            optimizer=COBYLA(maxiter=60), 
+            initial_point=initial_weights
+        )
+        classifier1.fit(X_train, y_train)
+        final_weights_1 = classifier1.weights
+        
+        # Calculate loss for initial and final points
+        initial_loss_1 = calculate_loss_for_weights(estimator_qnn_1, X_train, y_train, initial_weights)
+        final_loss_1 = calculate_loss_for_weights(estimator_qnn_1, X_train, y_train, final_weights_1)
+        
+        W1_1, W2_1, loss_1 = calculate_loss_landscape(estimator_qnn_1, X_train, y_train, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE)
+        plot_loss_landscape(
+            W1_1, W2_1, loss_1, 
+            "Loss Landscape: 1-Qubit Angle Embedding (RY+RZ)",
+            initial_weights=initial_weights, final_weights=final_weights_1,
+            initial_loss=initial_loss_1, final_loss=final_loss_1
+        )
+
+    if 2 in args.models:
+        # ============================================================================
+        # MODEL 2: 1-Qubit Amplitude Embedding
+        # ============================================================================
+        print("\n--- Processing Model 2: 1-Qubit Amplitude Embedding ---")
     
-    # Train the model to find the final weights
-    classifier1 = NeuralNetworkClassifier(
-        estimator_qnn_1, 
-        optimizer=COBYLA(maxiter=60), 
-        initial_point=initial_weights
-    )
-    classifier1.fit(X_train, y_train)
-    final_weights_1 = classifier1.weights
+        X_train_amp = preprocess_for_amplitude_embedding(X_train)
     
-    # Calculate loss for initial and final points
-    initial_loss_1 = calculate_loss_for_weights(estimator_qnn_1, X_train, y_train, initial_weights)
-    final_loss_1 = calculate_loss_for_weights(estimator_qnn_1, X_train, y_train, final_weights_1)
+        feature_map_2 = QuantumCircuit(1, name="FeatureMap2")
+        theta = Parameter("input1")
+        feature_map_2.ry(theta, 0)
     
-    W1_1, W2_1, loss_1 = calculate_loss_landscape(estimator_qnn_1, X_train, y_train, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE)
-    plot_loss_landscape(
-        W1_1, W2_1, loss_1, 
-        "Loss Landscape: 1-Qubit Angle Embedding (RY+RZ)",
-        initial_weights=initial_weights, final_weights=final_weights_1,
-        initial_loss=initial_loss_1, final_loss=final_loss_1
-    )
-
-    # ============================================================================
-    # MODEL 2: 1-Qubit Amplitude Embedding
-    # ============================================================================
-    print("\n--- Processing Model 2: 1-Qubit Amplitude Embedding ---")
-
-    X_train_amp = preprocess_for_amplitude_embedding(X_train)
-
-    feature_map_2 = QuantumCircuit(1, name="FeatureMap2")
-    theta = Parameter("input1")
-    feature_map_2.ry(theta, 0)
-
-    ansatz_2 = QuantumCircuit(1, name="Ansatz2")
-    # Using the same ansatz structure as Model 1
-    a_params_2 = [Parameter("theta1"), Parameter("theta2")]
-    ansatz_2.rz(a_params_2[0],0)
-    ansatz_2.ry(a_params_2[1],0)
+        ansatz_2 = QuantumCircuit(1, name="Ansatz2")
+        # Using the same ansatz structure as Model 1
+        a_params_2 = [Parameter("theta1"), Parameter("theta2")]
+        ansatz_2.rz(a_params_2[0],0)
+        ansatz_2.ry(a_params_2[1],0)
+        
+        qc_2 = QuantumCircuit(1)
+        qc_2.compose(feature_map_2, inplace=True)
+        qc_2.compose(ansatz_2, inplace=True)
     
-    qc_2 = QuantumCircuit(1)
-    qc_2.compose(feature_map_2, inplace=True)
-    qc_2.compose(ansatz_2, inplace=True)
-
-    estimator_qnn_2 = EstimatorQNN(
-        circuit=qc_2,
-        estimator=estimator,
-        input_params=feature_map_2.parameters,
-        weight_params=ansatz_2.parameters
-    )
-
-    # Train the model to find the final weights
-    classifier2 = NeuralNetworkClassifier(
-        estimator_qnn_2, 
-        optimizer=COBYLA(maxiter=60), 
-        initial_point=initial_weights
-    )
-    classifier2.fit(X_train_amp, y_train)
-    final_weights_2 = classifier2.weights
-
-    # Calculate loss for initial and final points
-    initial_loss_2 = calculate_loss_for_weights(estimator_qnn_2, X_train_amp, y_train, initial_weights)
-    final_loss_2 = calculate_loss_for_weights(estimator_qnn_2, X_train_amp, y_train, final_weights_2)
-
-    W1_2, W2_2, loss_2 = calculate_loss_landscape(estimator_qnn_2, X_train_amp, y_train, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE)
-    plot_loss_landscape(
-        W1_2, W2_2, loss_2, 
-        "Loss Landscape: 1-Qubit Amplitude Embedding",
-        initial_weights=initial_weights, final_weights=final_weights_2,
-        initial_loss=initial_loss_2, final_loss=final_loss_2
-    )
-
-    # ============================================================================
-    # MODEL 4: 2-Qubit Custom Angle Embedding + RealAmplitudes
-    # ============================================================================
-    print("\n--- Processing Model 4: 2-Qubit Custom Angle Embedding ---")
+        estimator_qnn_2 = EstimatorQNN(
+            circuit=qc_2,
+            estimator=estimator,
+            input_params=feature_map_2.parameters,
+            weight_params=ansatz_2.parameters
+        )
     
-    # Create 2-qubit custom angle embedding circuit
-    feature_map_4 = QuantumCircuit(2)
-    params_4 = [Parameter("input1"), Parameter("input2")]
-    feature_map_4.ry(params_4[0], 0)
-    feature_map_4.ry(params_4[1], 1)
+        # Train the model to find the final weights
+        classifier2 = NeuralNetworkClassifier(
+            estimator_qnn_2, 
+            optimizer=COBYLA(maxiter=60), 
+            initial_point=initial_weights
+        )
+        classifier2.fit(X_train_amp, y_train)
+        final_weights_2 = classifier2.weights
     
-    # RealAmplitudes(2, reps=1) has 4 parameters
-    ansatz_4 = RealAmplitudes(2, reps=1)
+        # Calculate loss for initial and final points
+        initial_loss_2 = calculate_loss_for_weights(estimator_qnn_2, X_train_amp, y_train, initial_weights)
+        final_loss_2 = calculate_loss_for_weights(estimator_qnn_2, X_train_amp, y_train, final_weights_2)
     
-    qc_4 = QuantumCircuit(2)
-    qc_4.compose(feature_map_4, inplace=True)
-    qc_4.compose(ansatz_4, inplace=True)
+        W1_2, W2_2, loss_2 = calculate_loss_landscape(estimator_qnn_2, X_train_amp, y_train, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE)
+        plot_loss_landscape(
+            W1_2, W2_2, loss_2, 
+            "Loss Landscape: 1-Qubit Amplitude Embedding",
+            initial_weights=initial_weights, final_weights=final_weights_2,
+            initial_loss=initial_loss_2, final_loss=final_loss_2
+        )
 
-    estimator_qnn_4 = EstimatorQNN(
-        circuit=qc_4,
-        estimator=estimator,
-        input_params=qc_4.parameters[:-4], # First 2 are inputs
-        weight_params=qc_4.parameters[-4:]  # Last 4 are weights
-    )
+    if 3 in args.models:
+        # ============================================================================
+        # MODEL 3: 2-Qubit ZZFeatureMap + RealAmplitudes
+        # ============================================================================
+        print("\n--- Processing Model 3: 2-Qubit ZZFeatureMap + RealAmplitudes ---")
+        
+        # QNNCircuit uses ZZFeatureMap and RealAmplitudes by default
+        qc_3 = QNNCircuit(2)
+        ansatz_3 = qc_3.ansatz
 
-    # Train the model to find the final weights
-    initial_weights_4 = algorithm_globals.random.random(ansatz_4.num_parameters)
-    classifier4 = NeuralNetworkClassifier(
-        estimator_qnn_4, 
-        optimizer=COBYLA(maxiter=80), # Increased maxiter for more params
-        initial_point=initial_weights_4
-    )
-    classifier4.fit(X_train, y_train)
-    final_weights_4 = classifier4.weights
+        estimator_qnn_3 = EstimatorQNN(
+            circuit=qc_3,
+            estimator=estimator
+            # QNNCircuit automatically assigns params
+        )
 
-    # --- SLICE 1: Vary weights 1 and 2 ---
-    slice_params_a = (0, 1)
+        # Train the model to find the final weights
+        initial_weights_3 = algorithm_globals.random.random(ansatz_3.num_parameters)
+        classifier3 = NeuralNetworkClassifier(
+            estimator_qnn_3, 
+            optimizer=COBYLA(maxiter=80),
+            initial_point=initial_weights_3
+        )
+        classifier3.fit(X_train, y_train)
+        final_weights_3 = classifier3.weights
+
+        # --- SLICE 1: Vary weights 1 and 2 ---
+        slice_params_a = (0, 1)
+        initial_weights_slice_a = np.copy(final_weights_3)
+        initial_weights_slice_a[slice_params_a[0]] = initial_weights_3[slice_params_a[0]]
+        initial_weights_slice_a[slice_params_a[1]] = initial_weights_3[slice_params_a[1]]
+        initial_loss_slice_a = calculate_loss_for_weights(estimator_qnn_3, X_train, y_train, initial_weights_slice_a)
+        final_loss_3 = calculate_loss_for_weights(estimator_qnn_3, X_train, y_train, final_weights_3)
+
+        W1_3a, W2_3a, loss_3_slice_a = calculate_loss_slice(
+            estimator_qnn_3, X_train, y_train, final_weights_3, 
+            slice_params=slice_params_a, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE
+        )
+        plot_loss_landscape(
+            W1_3a, W2_3a, loss_3_slice_a, 
+            f"Loss Slice: Model 3 (Weights {slice_params_a[0]+1} and {slice_params_a[1]+1})",
+            initial_weights=initial_weights_3, final_weights=final_weights_3, 
+            initial_loss=initial_loss_slice_a, final_loss=final_loss_3,
+            slice_params=slice_params_a
+        )
+        
+        # --- SLICE 2: Vary weights 3 and 4 ---
+        slice_params_b = (2, 3)
+        initial_weights_slice_b = np.copy(final_weights_3)
+        initial_weights_slice_b[slice_params_b[0]] = initial_weights_3[slice_params_b[0]]
+        initial_weights_slice_b[slice_params_b[1]] = initial_weights_3[slice_params_b[1]]
+        initial_loss_slice_b = calculate_loss_for_weights(estimator_qnn_3, X_train, y_train, initial_weights_slice_b)
+
+        W1_3b, W2_3b, loss_3_slice_b = calculate_loss_slice(
+            estimator_qnn_3, X_train, y_train, final_weights_3, 
+            slice_params=slice_params_b, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE
+        )
+        plot_loss_landscape(
+            W1_3b, W2_3b, loss_3_slice_b, 
+            f"Loss Slice: Model 3 (Weights {slice_params_b[0]+1} and {slice_params_b[1]+1})",
+            initial_weights=initial_weights_3, final_weights=final_weights_3, 
+            initial_loss=initial_loss_slice_b, final_loss=final_loss_3,
+            slice_params=slice_params_b
+        )
+
+    if 4 in args.models:
+        # ============================================================================
+        # MODEL 4: 2-Qubit Custom Angle Embedding + RealAmplitudes
+        # ============================================================================
+        print("\n--- Processing Model 4: 2-Qubit Custom Angle Embedding ---")
+        
+        # Create 2-qubit custom angle embedding circuit
+        feature_map_4 = QuantumCircuit(2)
+        params_4 = [Parameter("input1"), Parameter("input2")]
+        feature_map_4.ry(params_4[0], 0)
+        feature_map_4.ry(params_4[1], 1)
+        
+        # RealAmplitudes(2, reps=1) has 4 parameters
+        ansatz_4 = RealAmplitudes(2, reps=1)
+        
+        qc_4 = QuantumCircuit(2)
+        qc_4.compose(feature_map_4, inplace=True)
+        qc_4.compose(ansatz_4, inplace=True)
     
-    # Calculate loss for the initial and final points ON THIS SLICE
-    initial_weights_slice_a = np.copy(final_weights_4)
-    initial_weights_slice_a[slice_params_a[0]] = initial_weights_4[slice_params_a[0]]
-    initial_weights_slice_a[slice_params_a[1]] = initial_weights_4[slice_params_a[1]]
-    initial_loss_slice_a = calculate_loss_for_weights(estimator_qnn_4, X_train, y_train, initial_weights_slice_a)
-    final_loss_4 = calculate_loss_for_weights(estimator_qnn_4, X_train, y_train, final_weights_4)
-
-    # Calculate and plot the slice
-    W1_4a, W2_4a, loss_4_slice_a = calculate_loss_slice(
-        estimator_qnn_4, X_train, y_train, final_weights_4, 
-        slice_params=slice_params_a, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE
-    )
-    plot_loss_landscape(
-        W1_4a, W2_4a, loss_4_slice_a, 
-        f"Loss Slice: Model 4 (Weights {slice_params_a[0]+1} and {slice_params_a[1]+1})",
-        initial_weights=initial_weights_4, final_weights=final_weights_4, 
-        initial_loss=initial_loss_slice_a, final_loss=final_loss_4,
-        slice_params=slice_params_a
-    )
+        estimator_qnn_4 = EstimatorQNN(
+            circuit=qc_4,
+            estimator=estimator,
+            input_params=qc_4.parameters[:-4], # First 2 are inputs
+            weight_params=qc_4.parameters[-4:]  # Last 4 are weights
+        )
     
-    # --- SLICE 2: Vary weights 3 and 4 ---
-    slice_params_b = (2, 3)
+        # Train the model to find the final weights
+        initial_weights_4 = algorithm_globals.random.random(ansatz_4.num_parameters)
+        classifier4 = NeuralNetworkClassifier(
+            estimator_qnn_4, 
+            optimizer=COBYLA(maxiter=80), # Increased maxiter for more params
+            initial_point=initial_weights_4
+        )
+        classifier4.fit(X_train, y_train)
+        final_weights_4 = classifier4.weights
     
-    # Calculate loss for the initial point ON THIS SLICE
-    initial_weights_slice_b = np.copy(final_weights_4)
-    initial_weights_slice_b[slice_params_b[0]] = initial_weights_4[slice_params_b[0]]
-    initial_weights_slice_b[slice_params_b[1]] = initial_weights_4[slice_params_b[1]]
-    initial_loss_slice_b = calculate_loss_for_weights(estimator_qnn_4, X_train, y_train, initial_weights_slice_b)
-
-    # Calculate and plot the slice
-    W1_4b, W2_4b, loss_4_slice_b = calculate_loss_slice(
-        estimator_qnn_4, X_train, y_train, final_weights_4, 
-        slice_params=slice_params_b, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE
-    )
-    plot_loss_landscape(
-        W1_4b, W2_4b, loss_4_slice_b, 
-        f"Loss Slice: Model 4 (Weights {slice_params_b[0]+1} and {slice_params_b[1]+1})",
-        initial_weights=initial_weights_4, final_weights=final_weights_4, 
-        initial_loss=initial_loss_slice_b, final_loss=final_loss_4,
-        slice_params=slice_params_b
-    )
+        # --- SLICE 1: Vary weights 1 and 2 ---
+        slice_params_a = (0, 1)
+        
+        # Calculate loss for the initial and final points ON THIS SLICE
+        initial_weights_slice_a = np.copy(final_weights_4)
+        initial_weights_slice_a[slice_params_a[0]] = initial_weights_4[slice_params_a[0]]
+        initial_weights_slice_a[slice_params_a[1]] = initial_weights_4[slice_params_a[1]]
+        initial_loss_slice_a = calculate_loss_for_weights(estimator_qnn_4, X_train, y_train, initial_weights_slice_a)
+        final_loss_4 = calculate_loss_for_weights(estimator_qnn_4, X_train, y_train, final_weights_4)
+    
+        # Calculate and plot the slice
+        W1_4a, W2_4a, loss_4_slice_a = calculate_loss_slice(
+            estimator_qnn_4, X_train, y_train, final_weights_4, 
+            slice_params=slice_params_a, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE
+        )
+        plot_loss_landscape(
+            W1_4a, W2_4a, loss_4_slice_a, 
+            f"Loss Slice: Model 4 (Weights {slice_params_a[0]+1} and {slice_params_a[1]+1})",
+            initial_weights=initial_weights_4, final_weights=final_weights_4, 
+            initial_loss=initial_loss_slice_a, final_loss=final_loss_4,
+            slice_params=slice_params_a
+        )
+        
+        # --- SLICE 2: Vary weights 3 and 4 ---
+        slice_params_b = (2, 3)
+        
+        # Calculate loss for the initial point ON THIS SLICE
+        initial_weights_slice_b = np.copy(final_weights_4)
+        initial_weights_slice_b[slice_params_b[0]] = initial_weights_4[slice_params_b[0]]
+        initial_weights_slice_b[slice_params_b[1]] = initial_weights_4[slice_params_b[1]]
+        initial_loss_slice_b = calculate_loss_for_weights(estimator_qnn_4, X_train, y_train, initial_weights_slice_b)
+    
+        # Calculate and plot the slice
+        W1_4b, W2_4b, loss_4_slice_b = calculate_loss_slice(
+            estimator_qnn_4, X_train, y_train, final_weights_4, 
+            slice_params=slice_params_b, grid_resolution=GRID_RESOLUTION, param_range=PARAM_RANGE
+        )
+        plot_loss_landscape(
+            W1_4b, W2_4b, loss_4_slice_b, 
+            f"Loss Slice: Model 4 (Weights {slice_params_b[0]+1} and {slice_params_b[1]+1})",
+            initial_weights=initial_weights_4, final_weights=final_weights_4, 
+            initial_loss=initial_loss_slice_b, final_loss=final_loss_4,
+            slice_params=slice_params_b
+        )
 
     print("\n✅ Visualization complete.") 
