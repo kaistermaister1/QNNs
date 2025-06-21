@@ -45,7 +45,7 @@ os.makedirs("plots", exist_ok=True)
 
 
 # Configuration
-NUM_TRIALS = 10
+NUM_TRIALS = 100
 MAX_ITER = 80
 algorithm_globals.random_seed = 123
 np.random.seed(algorithm_globals.random_seed)
@@ -316,6 +316,49 @@ for trial in range(NUM_TRIALS):
     
 print(f"✅ Model 6 Complete - Avg Accuracy: {np.mean(model6_accuracies):.3f} ± {np.std(model6_accuracies):.3f}")
 
+# ============================================================================
+# MODEL 7: 2-Qubit Siamese-like QNN (2-feature pairs, condensed)
+# ============================================================================
+print("🔄 Model 7: 2-Qubit Siamese-like QNN (2-feature pairs, condensed)")
+model7_accuracies = []
+features, labels = load_and_prep_data(condensed=True)
+
+# Define circuit (copied from 2siamesecondensed.py)
+qc7 = QuantumCircuit(2)
+input_params7 = [Parameter(f"input{i}") for i in range(4)]
+weight_params7 = [Parameter(f"weight{i}") for i in range(4)]
+
+# Feature map part
+qc7.ry(input_params7[0], 0)
+qc7.rz(input_params7[1], 0)
+qc7.ry(input_params7[2], 1)
+qc7.rz(input_params7[3], 1)
+qc7.cx(0, 1)
+qc7.barrier()
+
+# Ansatz part
+qc7.ry(weight_params7[0], 0)
+qc7.ry(weight_params7[1], 1)
+qc7.rz(weight_params7[2], 0)
+qc7.rz(weight_params7[3], 1)
+
+observable7 = SparsePauliOp("ZZ")
+qnn7 = EstimatorQNN(circuit=qc7, estimator=estimator, input_params=input_params7, weight_params=weight_params7, observables=observable7)
+
+for trial in range(NUM_TRIALS):
+    print(f"   Trial {trial + 1}/{NUM_TRIALS}")
+    paired_features, paired_labels = create_flower_pairs(features, labels, num_pairs=120)
+    train_features, test_features, train_labels, test_labels = train_test_split(
+        paired_features, paired_labels, train_size=0.8, random_state=trial, stratify=paired_labels
+    )
+    
+    classifier = NeuralNetworkClassifier(qnn7, optimizer=COBYLA(maxiter=MAX_ITER), loss="squared_error")
+    classifier.fit(train_features, train_labels)
+    accuracy = classifier.score(test_features, test_labels)
+    model7_accuracies.append(accuracy)
+
+print(f"✅ Model 7 Complete - Avg Accuracy: {np.mean(model7_accuracies):.3f} ± {np.std(model7_accuracies):.3f}")
+
 
 # ============================================================================
 # RESULTS ANALYSIS AND VISUALIZATION
@@ -330,13 +373,14 @@ models = [
     '3. Siamese 4F\n(Binary Pair)', 
     '4. Siamese 2F\n(Binary Pair)',
     '5. VQC Custom 4F\n(3-Class)',
-    '6. VQC Custom 2F\n(3-Class)'
+    '6. VQC Custom 2F\n(3-Class)',
+    '7. 2Q Siamese 2F\n(Binary Pair)'
 ]
 accuracies = [
     model1_accuracies, model2_accuracies, model3_accuracies, 
-    model4_accuracies, model5_accuracies, model6_accuracies
+    model4_accuracies, model5_accuracies, model6_accuracies, model7_accuracies
 ]
-colors = ['skyblue', 'lightcoral', 'lightgreen', 'gold', 'violet', 'orange']
+colors = ['skyblue', 'lightcoral', 'lightgreen', 'gold', 'violet', 'orange', 'pink']
 
 # Print statistics
 for i, (model, acc) in enumerate(zip(models, accuracies)):
@@ -347,7 +391,7 @@ for i, (model, acc) in enumerate(zip(models, accuracies)):
     print(f"{model.replace(chr(10), ' '):<30}: {mean_acc:.3f} ± {std_acc:.3f} (range: {min_acc:.3f} - {max_acc:.3f})")
 
 # Create comprehensive visualization
-fig, axes = plt.subplots(2, 3, figsize=(22, 12))
+fig, axes = plt.subplots(3, 3, figsize=(22, 16))
 axes = axes.flatten()
 
 # Individual histograms
@@ -358,6 +402,10 @@ for i, (ax, model, acc, color) in enumerate(zip(axes, models, accuracies, colors
     ax.set_ylabel('Frequency')
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 1)
+
+# Hide the unused subplots
+for i in range(len(models), len(axes)):
+    axes[i].set_visible(False)
 
 plt.tight_layout()
 plt.suptitle(f'IRIS QNN Model Comparison - {NUM_TRIALS} Trials Each', fontsize=16, fontweight='bold', y=1.02)
@@ -429,5 +477,16 @@ try:
 except ImportError:
     print("\n📈 Statistical analysis requires scipy, pandas, and seaborn (pip install scipy pandas seaborn)")
 
-print(f"\n✨ Study completed! Saved plots to DEMOS/IRIS/plots/")
-print(f"✨ To view plots, check 'DEMOS/IRIS/plots/iris_comparison_histograms.png', 'DEMOS/IRIS/plots/iris_comparison_boxplots.png', and 'DEMOS/IRIS/plots/iris_comparison_p_values.png'")
+print(f"\n✨ Study completed! All 7 models compared successfully!")
+print(f"📊 Models tested:")
+print(f"   1. VQC with ZZFeatureMap + RealAmplitudes (4 features)")
+print(f"   2. VQC with ZZFeatureMap + EfficientSU2 (2 features)")
+print(f"   3. Siamese-like QNN (4-feature pairs, 4 qubits)")
+print(f"   4. Siamese-like QNN (2-feature pairs, 4 qubits)")
+print(f"   5. VQC with Custom Feature Map + Ansatz (4 features)")
+print(f"   6. VQC with Custom Feature Map + Ansatz (2 features)")
+print(f"   7. 2-Qubit Siamese-like QNN (2-feature pairs, condensed)")
+print(f"\n📁 Saved plots to DEMOS/IRIS/plots/:")
+print(f"   - iris_comparison_histograms.png")
+print(f"   - iris_comparison_boxplots.png") 
+print(f"   - iris_comparison_p_values.png")
