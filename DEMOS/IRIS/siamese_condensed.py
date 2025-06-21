@@ -36,7 +36,7 @@ from qiskit_machine_learning.utils import algorithm_globals as ml_algorithm_glob
 # Define a single circuit for feature map and ansatz
 qc = QuantumCircuit(4, name="VQC Circuit")
 input_params = [Parameter(f"input{i}") for i in range(4)]
-weight_params = [Parameter(f"weight{i}") for i in range(8)]
+weight_params = [Parameter(f"weight{i}") for i in range(4)]
 
 # Feature map part
 qc.ry(input_params[0], 0)

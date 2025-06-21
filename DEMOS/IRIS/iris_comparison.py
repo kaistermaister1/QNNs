@@ -409,7 +409,7 @@ for i in range(len(models), len(axes)):
 
 plt.tight_layout()
 plt.suptitle(f'IRIS QNN Model Comparison - {NUM_TRIALS} Trials Each', fontsize=16, fontweight='bold', y=1.02)
-plt.savefig('DEMOS/IRIS/plots/iris_comparison_histograms.png', dpi=150, bbox_inches='tight')
+plt.savefig('plots/iris_comparison_histograms2.png', dpi=150, bbox_inches='tight')
 plt.close()
 
 # Box plot comparison
@@ -435,7 +435,7 @@ plt.scatter(range(1, len(means) + 1), means, color='red', s=100, zorder=5, label
 plt.legend()
 
 plt.tight_layout()
-plt.savefig('DEMOS/IRIS/plots/iris_comparison_boxplots.png', dpi=150, bbox_inches='tight')
+plt.savefig('plots/iris_comparison_boxplots2.png', dpi=150, bbox_inches='tight')
 plt.close()
 
 # Statistical significance testing
@@ -471,7 +471,7 @@ try:
     plt.xticks(rotation=45, ha='right')
     plt.yticks(rotation=0)
     plt.tight_layout()
-    plt.savefig('DEMOS/IRIS/plots/iris_comparison_p_values.png', dpi=150, bbox_inches='tight')
+    plt.savefig('plots/iris_comparison_p_values2.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 except ImportError:
