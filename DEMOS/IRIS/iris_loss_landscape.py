@@ -31,6 +31,7 @@ from sklearn.decomposition import PCA
 import warnings
 import argparse
 import os
+from tqdm.auto import tqdm # For progress bars
 
 warnings.filterwarnings('ignore')
 # Define the output directory for plots
@@ -113,13 +114,15 @@ def calculate_loss_slice(qnn, X, y, trained_weights, loss_type, slice_params, pa
     
     loss_grid = np.zeros(W1.shape)
     
-    print(f"   Calculating loss slice ({grid_resolution}x{grid_resolution} grid) for params {slice_params}...")
-    for i in range(grid_resolution):
-        for j in range(grid_resolution):
-            weights = np.copy(trained_weights)
-            weights[slice_params[0]] = W1[i, j]
-            weights[slice_params[1]] = W2[i, j]
-            loss_grid[i, j] = calculate_loss_for_qnn(qnn, X, y, weights, loss_type)
+    total_points = grid_resolution * grid_resolution
+    with tqdm(total=total_points, desc=f"   Calculating Slice {slice_params}", leave=False) as pbar:
+        for i in range(grid_resolution):
+            for j in range(grid_resolution):
+                weights = np.copy(trained_weights)
+                weights[slice_params[0]] = W1[i, j]
+                weights[slice_params[1]] = W2[i, j]
+                loss_grid[i, j] = calculate_loss_for_qnn(qnn, X, y, weights, loss_type)
+                pbar.update(1)
             
     return W1, W2, loss_grid
 
@@ -156,6 +159,7 @@ def process_and_plot_model(model_name, classifier, qnn, X_train, y_train, loss_t
     print(f"\n--- Processing {model_name} ---")
     
     # Train the model to find the final weights
+    print(f"   Training model ({MAX_ITER} iterations)...")
     classifier.fit(X_train, y_train)
     final_weights = classifier.weights
     initial_weights = classifier.initial_point
@@ -187,12 +191,10 @@ def process_and_plot_model(model_name, classifier, qnn, X_train, y_train, loss_t
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Generate 3D loss landscape visualizations for IRIS QNN models.")
     parser.add_argument(
-        '--models', 
-        nargs='+', 
-        type=int, 
-        default=list(range(1, 8)), 
+        '--model',
+        type=int,
         choices=range(1, 8),
-        help="A list of model numbers to plot (1-7). Default: all."
+        help="Specify a single model number to plot (1-7). If not provided, all models are run."
     )
     args = parser.parse_args()
 
@@ -214,11 +216,13 @@ if __name__ == '__main__':
     paired_f_4d, paired_l_bin_4d = create_flower_pairs(features_2d, labels_cat)
     X_train_p4d, _, y_train_p4d, _ = train_test_split(paired_f_4d, paired_l_bin_4d, train_size=0.8, random_state=RANDOM_SEED, stratify=paired_l_bin_4d)
 
+    # Determine which models to run
+    models_to_run = [args.model] if args.model else list(range(1, 8))
 
     # ============================================================================
     # MODEL 1: VQC with ZZFeatureMap + RealAmplitudes (4 features)
     # ============================================================================
-    if 1 in args.models:
+    if 1 in models_to_run:
         feature_map = ZZFeatureMap(feature_dimension=4, reps=1)
         ansatz = RealAmplitudes(num_qubits=4, reps=3) # 16 weights
         classifier = VQC(sampler=sampler, feature_map=feature_map, ansatz=ansatz, optimizer=COBYLA(maxiter=MAX_ITER))
@@ -228,7 +232,7 @@ if __name__ == '__main__':
     # ============================================================================
     # MODEL 2: VQC with ZZFeatureMap + EfficientSU2 (2 features)
     # ============================================================================
-    if 2 in args.models:
+    if 2 in models_to_run:
         feature_map = ZZFeatureMap(feature_dimension=2, reps=1)
         ansatz = EfficientSU2(num_qubits=2, reps=3) # 18 weights
         classifier = VQC(sampler=sampler, feature_map=feature_map, ansatz=ansatz, optimizer=COBYLA(maxiter=MAX_ITER))
@@ -238,7 +242,7 @@ if __name__ == '__main__':
     # ============================================================================
     # MODEL 3: Siamese-like QNN (4-feature pairs)
     # ============================================================================
-    if 3 in args.models:
+    if 3 in models_to_run:
         qc = QuantumCircuit(4)
         inputs = [Parameter(f"i{i}") for i in range(8)]
         weights = [Parameter(f"w{i}") for i in range(8)]
@@ -255,7 +259,7 @@ if __name__ == '__main__':
     # ============================================================================
     # MODEL 4: Siamese-like QNN (2-feature pairs)
     # ============================================================================
-    if 4 in args.models:
+    if 4 in models_to_run:
         qc = QuantumCircuit(4)
         inputs = [Parameter(f"i{i}") for i in range(4)]
         weights = [Parameter(f"w{i}") for i in range(8)]
@@ -271,7 +275,7 @@ if __name__ == '__main__':
     # ============================================================================
     # MODEL 5: VQC with Custom Feature Map + Custom Ansatz (4 features)
     # ============================================================================
-    if 5 in args.models:
+    if 5 in models_to_run:
         feature_map = QuantumCircuit(4, name="fm5")
         feature_map.ry(Parameter("i0"), 0); feature_map.ry(Parameter("i1"), 1)
         feature_map.ry(Parameter("i2"), 2); feature_map.ry(Parameter("i3"), 3)
@@ -286,7 +290,7 @@ if __name__ == '__main__':
     # ============================================================================
     # MODEL 6: VQC with custom feature map and ansatz (2 features)
     # ============================================================================
-    if 6 in args.models:
+    if 6 in models_to_run:
         feature_map = QuantumCircuit(2, name="fm6")
         feature_map.ry(Parameter("i0"), 0); feature_map.ry(Parameter("i1"), 1)
         ansatz = QuantumCircuit(2, name="an6")
@@ -300,7 +304,7 @@ if __name__ == '__main__':
     # ============================================================================
     # MODEL 7: 2-Qubit Siamese-like QNN (2-feature pairs, condensed)
     # ============================================================================
-    if 7 in args.models:
+    if 7 in models_to_run:
         qc = QuantumCircuit(2)
         inputs = [Parameter(f"i{i}") for i in range(4)]
         weights = [Parameter(f"w{i}") for i in range(4)]
