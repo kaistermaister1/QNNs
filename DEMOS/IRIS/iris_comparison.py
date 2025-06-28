@@ -25,7 +25,7 @@ from IPython.display import clear_output
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import RealAmplitudes, ZZFeatureMap, EfficientSU2
-from qiskit_algorithms.optimizers import COBYLA
+from qiskit_algorithms.optimizers import COBYLA, SLSQP
 from qiskit_algorithms.utils import algorithm_globals
 from qiskit.primitives import Estimator, Sampler
 from qiskit.quantum_info import SparsePauliOp
@@ -47,7 +47,7 @@ os.makedirs("plots", exist_ok=True)
 
 
 # Configuration
-NUM_TRIALS = 100
+NUM_TRIALS = 1
 MAX_ITER = 80
 algorithm_globals.random_seed = 123
 np.random.seed(algorithm_globals.random_seed)
@@ -338,7 +338,7 @@ def run_model_7(sampler, estimator):
     input_params7 = [Parameter(f"input{i}") for i in range(4)]
     weight_params7 = [Parameter(f"weight{i}") for i in range(4)]
 
-    # Feature map part
+    # Feature map
     qc7.ry(input_params7[0], 0)
     qc7.rz(input_params7[1], 0)
     qc7.ry(input_params7[2], 1)
@@ -346,7 +346,7 @@ def run_model_7(sampler, estimator):
     qc7.cx(0, 1)
     qc7.barrier()
 
-    # Ansatz part
+    # Ansatz
     qc7.ry(weight_params7[0], 0)
     qc7.ry(weight_params7[1], 1)
     qc7.rz(weight_params7[2], 0)

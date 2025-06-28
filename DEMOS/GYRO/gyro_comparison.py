@@ -21,6 +21,7 @@ from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectKBest, f_classif
 import pandas as pd
 from tqdm import tqdm
+import argparse
 
 import warnings
 import os
@@ -30,12 +31,25 @@ os.makedirs("plots", exist_ok=True)
 
 
 # Configuration
-NUM_TRIALS = 10
+NUM_TRIALS = 1
 MAX_ITER = 80
 NUM_FEATURES = 3  # Number of features to select using FS1
 NUM_TRAIN_SAMPLES = 180  # Number of samples to use for training (remaining used for testing)
+OPTIMIZER = 'SLSQP'  # Options: 'SLSQP', 'COBYLA'
 # algorithm_globals.random_seed = 123
 # np.random.seed(algorithm_globals.random_seed)
+
+
+# --- Helper Functions ---
+
+def get_optimizer(optimizer_name, max_iter):
+    """Get optimizer object based on configuration."""
+    if optimizer_name.upper() == 'SLSQP':
+        return SLSQP(maxiter=max_iter)
+    elif optimizer_name.upper() == 'COBYLA':
+        return COBYLA(maxiter=max_iter)
+    else:
+        raise ValueError(f"Unsupported optimizer: {optimizer_name}. Options: 'SLSQP', 'COBYLA'")
 
 
 # --- Data Loading and Preprocessing ---
@@ -122,7 +136,14 @@ def load_and_prep_data(num_features=None, feature_selection_method='FS1', num_tr
 # ============================================================================
 # MODEL 1: VQC with ZZFeatureMap + EfficientSU2 (FS1 with specified features)
 # ============================================================================
-def run_model_1(sampler, estimator, num_features=4, num_train_samples=None):
+def run_model_1(sampler, estimator, num_features=4, num_train_samples=None, num_trials=None):
+    # Model 1 specific settings
+    model1_entanglement = 'circular'  # Options: 'linear', 'circular', 'full', 'pairwise', 'sca'
+    model1_loss = 'cross_entropy'   # Options: 'cross_entropy', 'squared_error'
+    
+    # Use passed num_trials or default to global NUM_TRIALS
+    trials_to_run = num_trials if num_trials is not None else NUM_TRIALS
+    
     model1_accuracies = []
     train_features, test_features, train_labels, test_labels = load_and_prep_data(
         num_features=num_features, feature_selection_method='FS1', num_train_samples=num_train_samples
@@ -131,7 +152,7 @@ def run_model_1(sampler, estimator, num_features=4, num_train_samples=None):
     # Create and save circuit diagram on first iteration
     num_qubits = train_features.shape[1]
     feature_map = ZZFeatureMap(feature_dimension=num_qubits, reps=2)
-    ansatz = EfficientSU2(num_qubits=num_qubits, reps=2)
+    ansatz = EfficientSU2(num_qubits=num_qubits, reps=2, entanglement=model1_entanglement)
     
     # Create the full circuit for visualization
     full_circuit = QuantumCircuit(num_qubits)
@@ -143,7 +164,7 @@ def run_model_1(sampler, estimator, num_features=4, num_train_samples=None):
         # Try to create a matplotlib circuit diagram
         fig = full_circuit.draw(output='mpl', style='iqp', plot_barriers=False)
         circuit_filename = f'plots/circuit_VQC_FS1_{num_features}features.png'
-        fig.suptitle(f'VQC Circuit: ZZFeatureMap + EfficientSU2 ({num_features} features)', fontsize=16, fontweight='bold')
+        fig.suptitle(f'VQC Circuit: ZZFeatureMap + EfficientSU2 ({num_features} features, {model1_entanglement} entanglement)', fontsize=16, fontweight='bold')
         fig.tight_layout()
         fig.savefig(circuit_filename, dpi=150, bbox_inches='tight')
         plt.close(fig)
@@ -153,31 +174,210 @@ def run_model_1(sampler, estimator, num_features=4, num_train_samples=None):
         circuit_text = str(full_circuit)
         circuit_filename = f'plots/circuit_VQC_FS1_{num_features}features.txt'
         with open(circuit_filename, 'w') as f:
-            f.write(f"VQC Circuit: ZZFeatureMap + EfficientSU2 ({num_features} features)\n")
+            f.write(f"VQC Circuit: ZZFeatureMap + EfficientSU2 ({num_features} features, {model1_entanglement} entanglement)\n")
             f.write("=" * 60 + "\n")
             f.write(circuit_text)
         print(f"✅ Circuit text saved to {circuit_filename}")
 
     # Training loop with progress bar - train on same data, test on same test set
-    for trial in tqdm(range(NUM_TRIALS), desc="Training Progress", ncols=80):
+    for trial in tqdm(range(trials_to_run), desc="Training Progress", ncols=80):
         classifier = VQC(
             sampler=sampler,
             feature_map=feature_map,
             ansatz=ansatz,
-            loss="cross_entropy",
-            optimizer=SLSQP(maxiter=MAX_ITER),
+            loss=model1_loss,
+            optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
         )
         
         classifier.fit(train_features, train_labels)
-        accuracy = classifier.score(test_features, test_labels)
-        model1_accuracies.append(accuracy)
+        
+        # Calculate accuracy on both training and testing data
+        train_accuracy = classifier.score(train_features, train_labels)
+        test_accuracy = classifier.score(test_features, test_labels)
+        
+        print(f"Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f}")
+        
+        model1_accuracies.append(test_accuracy)
 
-    return model1_accuracies, f'1. VQC ZZ+EfficientSU2 FS1-{num_features}F\n(HTRU_2 Binary)'
+    return model1_accuracies, f'1. VQC ZZ+EfficientSU2 FS1-{num_features}F\n({model1_entanglement} entanglement, {model1_loss} loss)'
+
+# ============================================================================
+# MODEL 2: VQC with ZZFeatureMap + Custom 6W ansatz
+# ============================================================================
+def run_model_2(sampler, estimator, num_features=4, num_train_samples=None, num_trials=None):
+    # Model 2 specific settings
+    model2_loss = 'cross_entropy'   # Options: 'cross_entropy', 'squared_error'
+    
+    # Use passed num_trials or default to global NUM_TRIALS
+    trials_to_run = num_trials if num_trials is not None else NUM_TRIALS
+    
+    model2_accuracies = []
+    train_features, test_features, train_labels, test_labels = load_and_prep_data(
+        num_features=num_features, feature_selection_method='FS1', num_train_samples=num_train_samples
+    )
+
+    # Create custom ansatz with 6 weights (hardcoded)
+    num_qubits = train_features.shape[1]
+    feature_map = ZZFeatureMap(feature_dimension=num_qubits, reps=2)
+    
+    # Create custom ansatz circuit
+    ansatz = QuantumCircuit(num_qubits)
+    weight_params = [Parameter(f'θ_{i}') for i in range(9)]
+    
+    # Apply RY-RZ-RX on each qubit
+    ansatz.ry(weight_params[0], 0)
+    ansatz.rz(weight_params[1], 0)
+    ansatz.rx(weight_params[2], 0)
+    ansatz.ry(weight_params[3], 1)
+    ansatz.rz(weight_params[4], 1)
+    ansatz.rx(weight_params[5], 1)
+    ansatz.ry(weight_params[6], 2)
+    ansatz.rz(weight_params[7], 2)
+    ansatz.rx(weight_params[8], 2)
+    
+    # Create the full circuit for visualization
+    full_circuit = QuantumCircuit(num_qubits)
+    full_circuit.compose(feature_map, inplace=True)
+    full_circuit.compose(ansatz, inplace=True)
+    
+    # Save circuit diagram using text representation
+    try:
+        # Try to create a matplotlib circuit diagram
+        fig = full_circuit.draw(output='mpl', style='iqp', plot_barriers=False)
+        circuit_filename = f'plots/circuit_VQC_Model2_{num_features}features.png'
+        fig.suptitle(f'Model 2: ZZFeatureMap + Custom 6W ({num_features} features)', fontsize=16, fontweight='bold')
+        fig.tight_layout()
+        fig.savefig(circuit_filename, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"✅ Circuit diagram saved to {circuit_filename}")
+    except Exception as e:
+        # Fallback: save text representation
+        circuit_text = str(full_circuit)
+        circuit_filename = f'plots/circuit_VQC_Model2_{num_features}features.txt'
+        with open(circuit_filename, 'w') as f:
+            f.write(f"Model 2: ZZFeatureMap + Custom 6W ({num_features} features)\n")
+            f.write("=" * 60 + "\n")
+            f.write(circuit_text)
+        print(f"✅ Circuit text saved to {circuit_filename}")
+
+    # Training loop with progress bar - train on same data, test on same test set
+    for trial in tqdm(range(trials_to_run), desc="Model 2 Training", ncols=80):
+        classifier = VQC(
+            sampler=sampler,
+            feature_map=feature_map,
+            ansatz=ansatz,
+            loss=model2_loss,
+            optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
+        )
+        
+        classifier.fit(train_features, train_labels)
+        
+        # Calculate accuracy on both training and testing data
+        train_accuracy = classifier.score(train_features, train_labels)
+        test_accuracy = classifier.score(test_features, test_labels)
+        
+        print(f"Model 2 - Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f}")
+        
+        model2_accuracies.append(test_accuracy)
+
+    return model2_accuracies, f'2. VQC ZZ+Custom6W FS1-{num_features}F\n(RY-RZ-RX per qubit, {model2_loss} loss)'
+
+# ============================================================================
+# MODEL 3: VQC with ZZFeatureMap + Y gates + Custom 6W ansatz
+# ============================================================================
+def run_model_3(sampler, estimator, num_features=4, num_train_samples=None, num_trials=None):
+    # Model 3 specific settings
+    model3_loss = 'cross_entropy'   # Options: 'cross_entropy', 'squared_error'
+    
+    # Use passed num_trials or default to global NUM_TRIALS
+    trials_to_run = num_trials if num_trials is not None else NUM_TRIALS
+    
+    model3_accuracies = []
+    train_features, test_features, train_labels, test_labels = load_and_prep_data(
+        num_features=num_features, feature_selection_method='FS1', num_train_samples=num_train_samples
+    )
+
+    # Create custom feature map with ZZFeatureMap + parametric Y rotations
+    num_qubits = train_features.shape[1]
+    
+    # Create enhanced feature map with ZZ encoding + Y rotations driven by features
+    feature_map = QuantumCircuit(num_qubits)
+    
+    # Add ZZFeatureMap
+    zz_feature_map = ZZFeatureMap(feature_dimension=num_qubits, reps=2)
+    feature_map.compose(zz_feature_map, inplace=True)
+    
+    # Add parametric Y rotations using the same feature parameters as ZZFeatureMap
+    feature_params = list(zz_feature_map.parameters)[:num_qubits]  # Get first num_qubits parameters
+    for qubit in range(num_qubits):
+        feature_map.ry(feature_params[qubit], qubit)
+
+    # Create custom ansatz circuit (extended for 3 qubits)
+    ansatz = QuantumCircuit(num_qubits)
+    weight_params = [Parameter(f'weight_{i}') for i in range(9)]
+    
+    # Apply RY-RZ-RX on each qubit
+    ansatz.ry(weight_params[0], 0)
+    ansatz.rz(weight_params[1], 0)
+    ansatz.rx(weight_params[2], 0)
+    ansatz.ry(weight_params[3], 1)
+    ansatz.rz(weight_params[4], 1)
+    ansatz.rx(weight_params[5], 1)
+    ansatz.ry(weight_params[6], 2)
+    ansatz.rz(weight_params[7], 2)
+    ansatz.rx(weight_params[8], 2)
+    
+    # Create the full circuit for visualization
+    full_circuit = QuantumCircuit(num_qubits)
+    full_circuit.compose(feature_map, inplace=True)
+    full_circuit.compose(ansatz, inplace=True)
+    
+    # Save circuit diagram using text representation
+    try:
+        # Try to create a matplotlib circuit diagram
+        fig = full_circuit.draw(output='mpl', style='iqp', plot_barriers=False)
+        circuit_filename = f'plots/circuit_VQC_Model3_{num_features}features.png'
+        fig.suptitle(f'Model 3: ZZFeatureMap + Y gates + Custom 6W ({num_features} features)', fontsize=16, fontweight='bold')
+        fig.tight_layout()
+        fig.savefig(circuit_filename, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"✅ Circuit diagram saved to {circuit_filename}")
+    except Exception as e:
+        # Fallback: save text representation
+        circuit_text = str(full_circuit)
+        circuit_filename = f'plots/circuit_VQC_Model3_{num_features}features.txt'
+        with open(circuit_filename, 'w') as f:
+            f.write(f"Model 3: ZZFeatureMap + Y gates + Custom 6W ({num_features} features)\n")
+            f.write("=" * 60 + "\n")
+            f.write(circuit_text)
+        print(f"✅ Circuit text saved to {circuit_filename}")
+
+    # Training loop with progress bar - train on same data, test on same test set
+    for trial in tqdm(range(trials_to_run), desc="Model 3 Training", ncols=80):
+        classifier = VQC(
+            sampler=sampler,
+            feature_map=feature_map,
+            ansatz=ansatz,
+            loss=model3_loss,
+            optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
+        )
+        
+        classifier.fit(train_features, train_labels)
+        
+        # Calculate accuracy on both training and testing data
+        train_accuracy = classifier.score(train_features, train_labels)
+        test_accuracy = classifier.score(test_features, test_labels)
+        
+        print(f"Model 3 - Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f}")
+        
+        model3_accuracies.append(test_accuracy)
+
+    return model3_accuracies, f'3. VQC ZZ+Y+Custom6W FS1-{num_features}F\n(ZZ+Y feature map, RY-RZ-RX ansatz, {model3_loss} loss)'
 
 # ============================================================================
 # RESULTS ANALYSIS AND VISUALIZATION
 # ============================================================================
-def analyze_and_visualize_results(accuracies, models):
+def analyze_and_visualize_results(accuracies, models, num_trials):
     print("\n" + "=" * 60)
     print("📊 FINAL RESULTS SUMMARY")
     print("=" * 60)
@@ -210,8 +410,8 @@ def analyze_and_visualize_results(accuracies, models):
         axes[i].set_visible(False)
 
     plt.tight_layout()
-    plt.suptitle(f'IRIS QNN Model Comparison - {NUM_TRIALS} Trials Each', fontsize=16, fontweight='bold', y=1.02)
-    plt.savefig('plots/iris_comparison_histograms2.png', dpi=150, bbox_inches='tight')
+    plt.suptitle(f'HTRU_2 QNN Model Comparison - {num_trials} Trials Each', fontsize=16, fontweight='bold', y=1.02)
+    plt.savefig('plots/gyro_comparison_histograms.png', dpi=150, bbox_inches='tight')
     plt.close()
 
     # Box plot comparison
@@ -222,7 +422,7 @@ def analyze_and_visualize_results(accuracies, models):
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
 
-    plt.title(f'IRIS QNN Model Performance Comparison\n({NUM_TRIALS} Trials)', 
+    plt.title(f'HTRU_2 QNN Model Performance Comparison\n({num_trials} Trials)', 
               fontsize=14, fontweight='bold')
     plt.ylabel('Test Accuracy', fontsize=12)
     plt.xlabel('Model Architecture & Task', fontsize=12)
@@ -237,7 +437,7 @@ def analyze_and_visualize_results(accuracies, models):
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig('plots/iris_comparison_boxplots2.png', dpi=150, bbox_inches='tight')
+    plt.savefig('plots/gyro_comparison_boxplots.png', dpi=150, bbox_inches='tight')
     plt.close()
 
     # Statistical significance testing
@@ -273,7 +473,7 @@ def analyze_and_visualize_results(accuracies, models):
         plt.xticks(rotation=45, ha='right')
         plt.yticks(rotation=0)
         plt.tight_layout()
-        plt.savefig('plots/iris_comparison_p_values2.png', dpi=150, bbox_inches='tight')
+        plt.savefig('plots/gyro_comparison_p_values.png', dpi=150, bbox_inches='tight')
         plt.close()
 
     except ImportError:
@@ -281,69 +481,75 @@ def analyze_and_visualize_results(accuracies, models):
 
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='HTRU_2 QNN Study')
+    parser.add_argument('--single-trial', action='store_true', 
+                       help='Train only 1 model instead of the default number of trials')
+    parser.add_argument('--model', type=int, choices=[1, 2, 3], 
+                       help='Specify a single model number to run (1-3). If not provided, all models are run.')
+    args = parser.parse_args()
+    
+    # Determine number of trials based on command line argument
+    num_trials = 1 if args.single_trial else NUM_TRIALS
+    
     # Ensure plots directory exists
     os.makedirs("plots", exist_ok=True)
 
     print("🚀 HTRU_2 QNN Study")
     samples_text = f"{NUM_TRAIN_SAMPLES} train samples" if NUM_TRAIN_SAMPLES else "80/20 split"
-    print(f"🔍 FS1 ({NUM_FEATURES} features) • {samples_text} • {NUM_TRIALS} trials")
+    if args.model:
+        print(f"🎯 Running only Model {args.model}")
+    else:
+        print(f"📊 Running all models")
+    print(f"🔍 FS1 ({NUM_FEATURES} features) • {samples_text} • {num_trials} trials")
+    print(f"⚙️  Optimizer: {OPTIMIZER} • Max Iter: {MAX_ITER}")
+    if args.single_trial:
+        print("🔄 Single trial mode enabled")
     print("=" * 60)
 
     sampler = Sampler()
     estimator = Estimator()
 
-    # Run Model 1 with the specified parameters
-    accuracies, model_name = run_model_1(sampler, estimator, num_features=NUM_FEATURES, num_train_samples=NUM_TRAIN_SAMPLES)
-    
-    # Display results
-    mean_acc = np.mean(accuracies)
-    std_acc = np.std(accuracies)
-    min_acc = np.min(accuracies)
-    max_acc = np.max(accuracies)
-    print(f"\n✅ Results: {mean_acc:.3f} ± {std_acc:.3f} (range: {min_acc:.3f} - {max_acc:.3f})")
+    # Define model runners
+    model_runners = [run_model_1, run_model_2, run_model_3]
 
-    # Create enhanced accuracy distribution plot
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    
-    # Histogram with enhanced statistics
-    ax1.hist(accuracies, bins=15, alpha=0.75, color='skyblue', edgecolor='black', density=True)
-    ax1.axvline(mean_acc, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_acc:.3f}')
-    ax1.axvline(mean_acc + std_acc, color='orange', linestyle='dotted', linewidth=2, label=f'+1σ: {mean_acc + std_acc:.3f}')
-    ax1.axvline(mean_acc - std_acc, color='orange', linestyle='dotted', linewidth=2, label=f'-1σ: {mean_acc - std_acc:.3f}')
-    ax1.set_title(f'Accuracy Distribution - FS1 ({NUM_FEATURES} features)', fontsize=14, fontweight='bold')
-    ax1.set_xlabel('Test Accuracy', fontsize=12)
-    ax1.set_ylabel('Density', fontsize=12)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    ax1.set_xlim(0, 1)
-    
-    # Box plot with statistics
-    bp = ax2.boxplot([accuracies], labels=[f'FS1-{NUM_FEATURES}F'], patch_artist=True)
-    bp['boxes'][0].set_facecolor('lightblue')
-    bp['boxes'][0].set_alpha(0.7)
-    ax2.scatter([1], [mean_acc], color='red', s=100, zorder=5, label=f'Mean: {mean_acc:.3f}')
-    ax2.set_title('Accuracy Summary Statistics', fontsize=14, fontweight='bold')
-    ax2.set_ylabel('Test Accuracy', fontsize=12)
-    ax2.grid(True, alpha=0.3)
-    ax2.set_ylim(0, 1)
-    ax2.legend()
-    
-    # Add text box with detailed statistics
-    stats_text = f"""Statistics Summary:
-Mean: {mean_acc:.4f}
-Std: {std_acc:.4f}
-Min: {min_acc:.4f}
-Max: {max_acc:.4f}
-Trials: {NUM_TRIALS}"""
-    
-    ax2.text(0.02, 0.98, stats_text, transform=ax2.transAxes, fontsize=10,
-             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-    
-    plt.tight_layout()
-    plot_filename = f'plots/gyro_fs1_{NUM_FEATURES}features_analysis.png'
-    plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"📊 Analysis saved to {plot_filename}")
+    if args.model:
+        # Run a single specified model
+        accuracies, model_name = model_runners[args.model - 1](sampler, estimator, num_features=NUM_FEATURES, num_train_samples=NUM_TRAIN_SAMPLES, num_trials=num_trials)
+        
+        # Display single model results
+        mean_acc = np.mean(accuracies)
+        std_acc = np.std(accuracies)
+        min_acc = np.min(accuracies)
+        max_acc = np.max(accuracies)
+        print(f"\n✅ Results: {mean_acc:.3f} ± {std_acc:.3f} (range: {min_acc:.3f} - {max_acc:.3f})")
+
+        # Create single model histogram
+        plt.figure(figsize=(10, 6))
+        plt.hist(accuracies, bins=12, alpha=0.75, color='orange', edgecolor='black')
+        plt.title(f'{model_name.replace(chr(10), " ")} Accuracy Distribution ({num_trials} Trials)', fontsize=16, fontweight='bold')
+        plt.xlabel('Test Accuracy', fontsize=12)
+        plt.ylabel('Frequency', fontsize=12)
+        plt.axvline(mean_acc, color='red', linestyle='dashed', linewidth=2, label=f'Mean: {mean_acc:.3f}')
+        plt.legend()
+        plt.grid(True, alpha=0.4)
+        plt.xlim(0, 1)
+        plot_filename = f'plots/model{args.model}_histogram.png'
+        plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"📊 Saved accuracy histogram to {plot_filename}")
+
+    else:
+        # Run all models and perform comparison
+        all_accuracies = []
+        all_model_names = []
+        for runner in model_runners:
+            accuracies, model_name = runner(sampler, estimator, num_features=NUM_FEATURES, num_train_samples=NUM_TRAIN_SAMPLES, num_trials=num_trials)
+            all_accuracies.append(accuracies)
+            all_model_names.append(model_name)
+        
+        analyze_and_visualize_results(all_accuracies, all_model_names, num_trials)
+
     print(f"✨ Study completed!")
 
 

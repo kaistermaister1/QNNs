@@ -1,0 +1,23 @@
+--- Overview for 2Q, 4F, 2W ---
+
+Number of Training Runs: 10
+
+Training Accuracy:  0.7367 ± 0.0010
+Test Accuracy:      0.7283 ± 0.0041
+Final Loss:         0.9166 ± 0.0000
+Iterations per run: 25
+
+Individual Results:
+  Run 1: Train=0.7375, Test=0.7250, Loss=0.9166
+  Run 2: Train=0.7354, Test=0.7333, Loss=0.9166
+  Run 3: Train=0.7375, Test=0.7250, Loss=0.9166
+  Run 4: Train=0.7354, Test=0.7333, Loss=0.9166
+  Run 5: Train=0.7354, Test=0.7333, Loss=0.9166
+  Run 6: Train=0.7375, Test=0.7250, Loss=0.9166
+  Run 7: Train=0.7375, Test=0.7250, Loss=0.9166
+  Run 8: Train=0.7375, Test=0.7250, Loss=0.9166
+  Run 9: Train=0.7375, Test=0.7250, Loss=0.9166
+  Run 10: Train=0.7354, Test=0.7333, Loss=0.9166
+
+Best Weights (from best test run):
+[1.1541 1.0841]

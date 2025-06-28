@@ -1,0 +1,23 @@
+--- Overview for 2Q, 4F+1CNOT, 6W ---
+
+Number of Training Runs: 10
+
+Training Accuracy:  0.5942 ± 0.0256
+Test Accuracy:      0.5292 ± 0.0187
+Final Loss:         0.9558 ± 0.0052
+Iterations per run: 30
+
+Individual Results:
+  Run 1: Train=0.6062, Test=0.5417, Loss=0.9507
+  Run 2: Train=0.5750, Test=0.4917, Loss=0.9577
+  Run 3: Train=0.6167, Test=0.5417, Loss=0.9543
+  Run 4: Train=0.6104, Test=0.5417, Loss=0.9538
+  Run 5: Train=0.5458, Test=0.5083, Loss=0.9610
+  Run 6: Train=0.5542, Test=0.5083, Loss=0.9685
+  Run 7: Train=0.6271, Test=0.5500, Loss=0.9562
+  Run 8: Train=0.6062, Test=0.5417, Loss=0.9522
+  Run 9: Train=0.6042, Test=0.5417, Loss=0.9503
+  Run 10: Train=0.5958, Test=0.5250, Loss=0.9537
+
+Best Weights (from best test run):
+[-0.3588 2.2315 1.6752 0.3551 0.2916 0.2786]

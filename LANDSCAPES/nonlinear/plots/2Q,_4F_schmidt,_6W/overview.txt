@@ -1,0 +1,23 @@
+--- Overview for 2Q, 4F (schmidt), 6W ---
+
+Number of Training Runs: 10
+
+Training Accuracy:  0.7356 ± 0.0047
+Test Accuracy:      0.7325 ± 0.0120
+Final Loss:         0.6954 ± 0.0059
+Iterations per run: 50
+
+Individual Results:
+  Run 1: Train=0.7312, Test=0.7333, Loss=0.7089
+  Run 2: Train=0.7354, Test=0.7417, Loss=0.7007
+  Run 3: Train=0.7312, Test=0.7167, Loss=0.6898
+  Run 4: Train=0.7292, Test=0.7333, Loss=0.6934
+  Run 5: Train=0.7354, Test=0.7417, Loss=0.6918
+  Run 6: Train=0.7354, Test=0.7250, Loss=0.6911
+  Run 7: Train=0.7333, Test=0.7250, Loss=0.6902
+  Run 8: Train=0.7396, Test=0.7333, Loss=0.6961
+  Run 9: Train=0.7396, Test=0.7583, Loss=0.6914
+  Run 10: Train=0.7458, Test=0.7167, Loss=0.7001
+
+Best Weights (from best test run):
+[-0.1402 0.3601 2.4840 2.2315 0.4841 1.0565]

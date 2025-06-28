@@ -1,0 +1,113 @@
+--- Overview for 2Q, 4F(Z+X), 6W ---
+
+Number of Training Runs: 100
+
+Training Accuracy:  0.5341 ± 0.0116
+Test Accuracy:      0.5175 ± 0.0203
+Final Loss:         0.9902 ± 0.0038
+Iterations per run: 30
+
+Individual Results:
+  Run 1: Train=0.5188, Test=0.5083, Loss=0.9936
+  Run 2: Train=0.5312, Test=0.5333, Loss=0.9872
+  Run 3: Train=0.5375, Test=0.5083, Loss=0.9900
+  Run 4: Train=0.5354, Test=0.5250, Loss=0.9868
+  Run 5: Train=0.5437, Test=0.5167, Loss=0.9881
+  Run 6: Train=0.5375, Test=0.5167, Loss=0.9936
+  Run 7: Train=0.5292, Test=0.5417, Loss=0.9874
+  Run 8: Train=0.5375, Test=0.5083, Loss=0.9868
+  Run 9: Train=0.5479, Test=0.5083, Loss=0.9883
+  Run 10: Train=0.5354, Test=0.5417, Loss=0.9872
+  Run 11: Train=0.5375, Test=0.5167, Loss=0.9890
+  Run 12: Train=0.5292, Test=0.5417, Loss=0.9922
+  Run 13: Train=0.5479, Test=0.5083, Loss=0.9931
+  Run 14: Train=0.5437, Test=0.5167, Loss=0.9870
+  Run 15: Train=0.5396, Test=0.5167, Loss=0.9918
+  Run 16: Train=0.5500, Test=0.5083, Loss=0.9877
+  Run 17: Train=0.5292, Test=0.5417, Loss=0.9921
+  Run 18: Train=0.5292, Test=0.5417, Loss=0.9891
+  Run 19: Train=0.5250, Test=0.5250, Loss=0.9927
+  Run 20: Train=0.5333, Test=0.5250, Loss=0.9881
+  Run 21: Train=0.5333, Test=0.5250, Loss=0.9907
+  Run 22: Train=0.5125, Test=0.5167, Loss=0.9981
+  Run 23: Train=0.5333, Test=0.5250, Loss=0.9870
+  Run 24: Train=0.5500, Test=0.5000, Loss=0.9866
+  Run 25: Train=0.4917, Test=0.5000, Loss=0.9992
+  Run 26: Train=0.5437, Test=0.5167, Loss=0.9875
+  Run 27: Train=0.5292, Test=0.5417, Loss=0.9894
+  Run 28: Train=0.5292, Test=0.5417, Loss=0.9947
+  Run 29: Train=0.5333, Test=0.5250, Loss=0.9872
+  Run 30: Train=0.5250, Test=0.5250, Loss=0.9888
+  Run 31: Train=0.5542, Test=0.5083, Loss=0.9868
+  Run 32: Train=0.5500, Test=0.4917, Loss=0.9873
+  Run 33: Train=0.5333, Test=0.5250, Loss=0.9941
+  Run 34: Train=0.5375, Test=0.5083, Loss=0.9887
+  Run 35: Train=0.5333, Test=0.5250, Loss=0.9891
+  Run 36: Train=0.5000, Test=0.5000, Loss=1.0000
+  Run 37: Train=0.5333, Test=0.5250, Loss=0.9890
+  Run 38: Train=0.5292, Test=0.5250, Loss=0.9879
+  Run 39: Train=0.5292, Test=0.5417, Loss=0.9904
+  Run 40: Train=0.5479, Test=0.5000, Loss=0.9866
+  Run 41: Train=0.5375, Test=0.5250, Loss=0.9869
+  Run 42: Train=0.5417, Test=0.5167, Loss=0.9936
+  Run 43: Train=0.5375, Test=0.5000, Loss=0.9868
+  Run 44: Train=0.5333, Test=0.5250, Loss=0.9871
+  Run 45: Train=0.5333, Test=0.5250, Loss=0.9880
+  Run 46: Train=0.5437, Test=0.5167, Loss=0.9947
+  Run 47: Train=0.5437, Test=0.5167, Loss=0.9873
+  Run 48: Train=0.5417, Test=0.5083, Loss=0.9910
+  Run 49: Train=0.5437, Test=0.5167, Loss=0.9884
+  Run 50: Train=0.4979, Test=0.4750, Loss=0.9993
+  Run 51: Train=0.5500, Test=0.5000, Loss=0.9870
+  Run 52: Train=0.5375, Test=0.5167, Loss=0.9870
+  Run 53: Train=0.5312, Test=0.5167, Loss=0.9942
+  Run 54: Train=0.5354, Test=0.5250, Loss=0.9863
+  Run 55: Train=0.5500, Test=0.5000, Loss=0.9866
+  Run 56: Train=0.5437, Test=0.5167, Loss=0.9872
+  Run 57: Train=0.5417, Test=0.5167, Loss=0.9866
+  Run 58: Train=0.5292, Test=0.5417, Loss=0.9931
+  Run 59: Train=0.5375, Test=0.5250, Loss=0.9915
+  Run 60: Train=0.5417, Test=0.5167, Loss=0.9905
+  Run 61: Train=0.5333, Test=0.5250, Loss=0.9867
+  Run 62: Train=0.5333, Test=0.5250, Loss=0.9894
+  Run 63: Train=0.5354, Test=0.5250, Loss=0.9867
+  Run 64: Train=0.5292, Test=0.5417, Loss=0.9925
+  Run 65: Train=0.5354, Test=0.5083, Loss=0.9867
+  Run 66: Train=0.5417, Test=0.5167, Loss=0.9903
+  Run 67: Train=0.4938, Test=0.4250, Loss=0.9998
+  Run 68: Train=0.5292, Test=0.5417, Loss=0.9884
+  Run 69: Train=0.5500, Test=0.5083, Loss=0.9867
+  Run 70: Train=0.4958, Test=0.4000, Loss=0.9995
+  Run 71: Train=0.5208, Test=0.5167, Loss=0.9994
+  Run 72: Train=0.5396, Test=0.5250, Loss=0.9875
+  Run 73: Train=0.5396, Test=0.4917, Loss=0.9880
+  Run 74: Train=0.5437, Test=0.5167, Loss=0.9872
+  Run 75: Train=0.5333, Test=0.5250, Loss=0.9902
+  Run 76: Train=0.5375, Test=0.5167, Loss=0.9935
+  Run 77: Train=0.5333, Test=0.5250, Loss=0.9872
+  Run 78: Train=0.5333, Test=0.5250, Loss=0.9875
+  Run 79: Train=0.5437, Test=0.5167, Loss=0.9897
+  Run 80: Train=0.5375, Test=0.4917, Loss=0.9873
+  Run 81: Train=0.5312, Test=0.5167, Loss=0.9915
+  Run 82: Train=0.5354, Test=0.5167, Loss=0.9870
+  Run 83: Train=0.5312, Test=0.5250, Loss=0.9868
+  Run 84: Train=0.5312, Test=0.5167, Loss=0.9884
+  Run 85: Train=0.5375, Test=0.5000, Loss=0.9872
+  Run 86: Train=0.5354, Test=0.5417, Loss=0.9865
+  Run 87: Train=0.5167, Test=0.5417, Loss=0.9984
+  Run 88: Train=0.5333, Test=0.5250, Loss=0.9943
+  Run 89: Train=0.5312, Test=0.5167, Loss=0.9899
+  Run 90: Train=0.5333, Test=0.5250, Loss=0.9997
+  Run 91: Train=0.5312, Test=0.5333, Loss=0.9934
+  Run 92: Train=0.5292, Test=0.5417, Loss=0.9941
+  Run 93: Train=0.5396, Test=0.5250, Loss=0.9867
+  Run 94: Train=0.5437, Test=0.5083, Loss=0.9883
+  Run 95: Train=0.5437, Test=0.5167, Loss=0.9892
+  Run 96: Train=0.5375, Test=0.5333, Loss=0.9873
+  Run 97: Train=0.5437, Test=0.5167, Loss=0.9873
+  Run 98: Train=0.5292, Test=0.5417, Loss=0.9900
+  Run 99: Train=0.5333, Test=0.5250, Loss=0.9952
+  Run 100: Train=0.5250, Test=0.5000, Loss=0.9960
+
+Best Weights (from best test run):
+[1.5790 0.6411 -0.0419 -0.0624 1.1427 0.9749]

@@ -38,7 +38,7 @@ qc = QuantumCircuit(2, name="VQC Circuit")
 input_params = [Parameter(f"input{i}") for i in range(4)]
 weight_params = [Parameter(f"weight{i}") for i in range(4)]
 
-# Feature map part
+# Feature map
 qc.ry(input_params[0],0)
 qc.rz(input_params[1],0)
 qc.ry(input_params[2],1)
@@ -46,7 +46,7 @@ qc.rz(input_params[3],1)
 qc.cx(0, 1)
 qc.barrier()
 
-# Ansatz part
+# Ansatz
 qc.ry(weight_params[0], 0)
 qc.ry(weight_params[1], 1)
 qc.rz(weight_params[2], 0)
