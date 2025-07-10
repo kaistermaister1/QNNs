@@ -24,7 +24,7 @@ train_features, test_features, train_labels, test_labels, boundary = get_star_da
 r = 2 # Polynomial degree
 m = 3 # Number of log(n) submodels  
 n = 2 # Number of input features
-t = 2 # Polynomial terms
+t = 0 # Polynomial terms
 spqc_frame = create_spqc_circuit(t=t, m=m, n=n, r=r)
 
 print(f"Total qubits (not counting ancilla): {spqc_frame.num_qubits-1}")
@@ -48,7 +48,6 @@ if False:
     random_weights = create_random_weights(spqc_frame, seed=42) # Ouputs an array of submodel + address weights
     example_input = train_features[0]
     spqc = bind_params(spqc_frame, example_input, random_weights) # Binds features and weights to circuit
-    # visualize_circuit(spqc)
 
     # --- Run the circuit ---
     simulator = AerSimulator() 
@@ -57,11 +56,11 @@ if False:
     job = sim.run(circ, shots=8192)
     counts = job.result().get_counts(0)
     pre_select_probability_vector = pre_select_convert(counts, m, n, r) # Pre selected probability vector
-    # print(f"Counts (first {m} bits correspond to address register qubits, the other {n*r} bits correspond to data register qubits):")
-    # print(counts)
     probability_vector = post_select(counts, m, n, r) # Post-select states with only 0s in the data registers
-    print(f"Input: {example_input}") # [0.1, 0.2]
     print(f"Crude post-selection probability vector: {probability_vector}") # [0.25, 0.25, 0.0, 0.5]
+    print(f"Amount of non-zero probabilities (crude): {np.count_nonzero(probability_vector)}")
+    print(f"Sum of crude vector: {np.sum(probability_vector)}")
+
 
 # --- Remove measurements from circuit ---
 from qiskit import QuantumCircuit
@@ -94,10 +93,10 @@ class SPQCModel:
             grads[i] = 0.5*(lp - lm)
         return grads
 
-visualize_circuit(qc_qnn)
+# visualize_circuit(qc_qnn)
      
 # --- Train the model with ADAM ---
-if False:
+if True:
     spqc_model = SPQCModel(qc_qnn, t, m, n, r)
     θ = create_random_weights(spqc_frame, seed=42) # Initial random weights
     m1 = np.zeros_like(θ) # first moment

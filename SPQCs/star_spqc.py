@@ -55,9 +55,27 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
     num_classical_bits = n*r + m  # One classical bit per data/address qubit
     qc = QuantumCircuit(total_qubits, num_classical_bits)
     qc.h(address_register)
-    if t > 0:
-        qc.h(term_register)
 
+    # Prepare term register into "diagonal" state, eg. (|100>  + |110> + |111>) / sqrt(3)
+    def pyramid_state(t: int, inverse: bool = False) -> QuantumCircuit:
+        """
+        Builds the t-qubit pyramid state circuit (or its inverse if inverse=True)
+        • (|10…0> + |110…0> + … + |1…1>) / sqrt(t)
+        • t = 0 → empty circuit
+        • t = 1 → X on qubit 0
+        • t ≥ 2 → X on qubit 0, then t-1 controlled-Ry's
+        """
+        qc = QuantumCircuit(t)
+        qc.x(0)
+        # cascade controlled Ry’s for k=2..t
+        for k in range(2, t+1):
+            θ = 2 * np.arccos(1 / np.sqrt(t - k + 2))
+            qc.cry(θ, k-2, k-1) # control = qubit k-2, target = qubit k-1
+        return qc.inverse() if inverse else qc
+    if t > 0:
+        qc.append(pyramid_state(t), term_register)
+
+    # Apply feature maps
     for i in range(len(data_registers)):
         qc.append(fm, data_registers[i])  # Feature maps
 
@@ -98,24 +116,6 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
         flip_bits(qc, address_register, m_address)
         qc.barrier(label="---")
 
-    # Create Phi state for "incorrect" term addresses (conditional on qubit 0 being |0⟩)
-    if t > 0:
-        qc.x(0)
-        # Inverse feature maps 
-        inverse_fm = QuantumCircuit(n)
-        inverse_fm.ry(-input_thetas[0],0)
-        inverse_fm.ry(-input_thetas[1],1)
-        inv_fm = inverse_fm.to_gate()
-        controlled_inv_fm = inv_fm.control(num_ctrl_qubits=1)
-        for j in range(len(data_registers)):
-            qc.append(controlled_inv_fm, [0] + list(data_registers[j]))
-
-        # Set all data registers to |1>
-        for j in range(len(data_registers)):
-            for qubit in data_registers[j]:
-                qc.cx(0, qubit)
-        qc.barrier(label="---")
-
     # Measure data registers
     classical_bit_index = 0
     for i, data_register in enumerate(data_registers):
@@ -126,7 +126,7 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
 
     # Reset term register
     if t > 0:
-        qc.h(term_register)
+        qc.append(pyramid_state(t, inverse=True), term_register)
 
     # Create address register ansatz
     address_ansatz = EfficientSU2(m, reps=1, parameter_prefix='address_theta')
@@ -263,9 +263,9 @@ def post_select(counts, m, n, r):
     data_size = n*r
     post = {}
     for bitstr, count in fixed.items():
-        # now the *last* data_size bits are the data register
-        if bitstr[-data_size:] == '0'*data_size:
-            addr_bits = bitstr[:m]           # first m bits = address
+        # Check if data registers (first n*r bits after reversal) are all 0
+        if bitstr[:data_size] == '0'*data_size:
+            addr_bits = bitstr[data_size:data_size+m]  # address bits come after data bits
             post[addr_bits] = post.get(addr_bits, 0) + count
 
     total = sum(post.values())
@@ -315,10 +315,6 @@ def model(qc, input_vals, weights, t, m, n, r):
     spqc = bind_params(qc, input_vals, weights)
 
     # Run circuit and extract statevector
-    # sim = AerSimulator(method='statevector') # Construct simulator for circuit
-    # circ = transpile(spqc, sim) # Turn circuit into instructions for simulator  
-    # job = sim.run(circ)
-    # statevector = job.result().get_statevector()
     statevector = Statevector.from_instruction(spqc).data
 
     # Create a projection matrix for the pre-postselection statevector
@@ -339,12 +335,20 @@ def model(qc, input_vals, weights, t, m, n, r):
     phi_unnorm = P @ statevector
     phi = phi_unnorm / np.linalg.norm(phi_unnorm) # This is a 2^N total statevector
 
+    # Print amount of non-zero amplitudes
+    print(f"Amount of non-zero amplitudes: {np.count_nonzero(phi)}")
+
     # Extract address register amplitudes
     N = t + m + n*r + 1
     tensor = phi.reshape([2]*N) # Turn into N-dimensional tensor (1 axis for each qubit)
     index = [0]*t + [slice(None)]*m + [0]*(n*r) + [0] # Keep only the address amplitudes since the rest are 0
     addr = tensor[tuple(index)] # Tensor the only 2 non-zero amplitudes
     addr_amps = addr.reshape(2**m) # Reshape to 2^m vector
+
+    # Print amount of non-zero amplitudes
+    print(f"Amount of non-zero probabilites after squaring: {np.count_nonzero(addr_amps)}")
+    print(f"addr_amps to probabilities: {np.abs(addr_amps)**2}")
+    print(f"Sum of probabilities: {np.sum(np.abs(addr_amps)**2)}")
 
     return addr_amps
 
