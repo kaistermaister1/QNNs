@@ -62,40 +62,38 @@ def generate_dataset():
     return inside_points, outside_points, star_path
 
 def create_labeled_dataset():
-    """Create labeled dataset with one-hot encoding and 80/20 split."""
+    """Create labeled dataset with scalar labels (0 or 1) and 80/20 split."""
     inside_points, outside_points, star_path = generate_dataset()
     
     # Combine all points
     all_points = np.vstack([inside_points, outside_points])
     
-    # Create labels (1 for inside, 0 for outside)
-    labels = np.hstack([np.ones(len(inside_points)), np.zeros(len(outside_points))])
-    
-    # Create one-hot labels
-    one_hot_labels = np.zeros((len(labels), 2))
-    one_hot_labels[labels == 1, 0] = 1  # Inside: [1, 0]
-    one_hot_labels[labels == 0, 1] = 1  # Outside: [0, 1]
+    # Create scalar labels: inside -> 0, outside -> 1
+    labels = np.hstack([np.zeros(len(inside_points)), np.ones(len(outside_points))])
     
     # Split into train/test while maintaining proportions
-    # We'll use stratify to ensure both classes are represented proportionally
-    X_train, X_test, y_train, y_test, y_train_onehot, y_test_onehot = train_test_split(
-        all_points, labels, one_hot_labels, 
+    X_train, X_test, y_train, y_test = train_test_split(
+        all_points, labels, 
         test_size=0.2, 
         stratify=labels, 
         random_state=42
     )
     
-    return X_train, X_test, y_train, y_test, y_train_onehot, y_test_onehot, star_path
+    return X_train, X_test, y_train, y_test, star_path
 
 def visualize_data():
     """Visualize the star boundary dataset with train/test split."""
-    X_train, X_test, y_train, y_test, y_train_onehot, y_test_onehot, star_path = get_star_data()
+    X_train, X_test, y_train, y_test, star_path = get_star_data()
     
-    # Separate train points by class
-    train_inside = X_train[y_train == 1]
-    train_outside = X_train[y_train == 0]
-    test_inside = X_test[y_test == 1]
-    test_outside = X_test[y_test == 0]
+    # Labels are already scalar: 0 for inside, 1 for outside
+    y_train_binary = y_train.astype(int)
+    y_test_binary = y_test.astype(int)
+    
+    # Separate train points by class  
+    train_inside = X_train[y_train_binary == 0]  # Class 0 is inside
+    train_outside = X_train[y_train_binary == 1]  # Class 1 is outside
+    test_inside = X_test[y_test_binary == 0]
+    test_outside = X_test[y_test_binary == 1]
     
     plt.figure(figsize=(12, 8))
     
@@ -158,22 +156,24 @@ def visualize_data():
     print(f"  - Total test: {len(X_test)} points")
     
     print(f"\nLabel formats:")
-    print(f"Binary labels - Inside: 1, Outside: 0")
-    print(f"One-hot labels - Inside: [1, 0], Outside: [0, 1]")
+    print(f"Scalar labels:")
+    print(f"Inside: 0, Outside: 1")
 
 def get_star_data():
     """
     Get all star classification data without plotting.
     
     Returns:
-        tuple: (X_train, X_test, y_train, y_test, y_train_onehot, y_test_onehot, star_path)
+        tuple: (X_train, X_test, y_train, y_test, star_path)
             - X_train: Training features (coordinates)
             - X_test: Test features (coordinates) 
-            - y_train: Training binary labels (1=inside, 0=outside)
-            - y_test: Test binary labels
-            - y_train_onehot: Training one-hot labels ([1,0]=inside, [0,1]=outside)
-            - y_test_onehot: Test one-hot labels
+            - y_train: Training scalar labels (0 or 1)
+            - y_test: Test scalar labels (0 or 1)
             - star_path: The star boundary path object
+            
+    Label encoding:
+        - Inside star: 0
+        - Outside star: 1
     """
     return create_labeled_dataset()
 
@@ -182,14 +182,19 @@ if __name__ == "__main__":
     visualize_data()
     
     # Get data for demonstration
-    X_train, X_test, y_train, y_test, y_train_onehot, y_test_onehot, star_path = get_star_data()
+    X_train, X_test, y_train, y_test, star_path = get_star_data()
     
     # Demonstrate the data formats
     print(f"\nExample data points:")
-    print(f"First training point: {X_train[0]} -> Binary label: {y_train[0]} -> One-hot: {y_train_onehot[0]}")
-    print(f"First test point: {X_test[0]} -> Binary label: {y_test[0]} -> One-hot: {y_test_onehot[0]}")
+    print(f"First training point: {X_train[0]} -> Scalar label: {y_train[0]}")
+    print(f"First test point: {X_test[0]} -> Scalar label: {y_test[0]}")
     
     # Show shapes
     print(f"\nData shapes:")
-    print(f"X_train: {X_train.shape}, y_train: {y_train.shape}, y_train_onehot: {y_train_onehot.shape}")
-    print(f"X_test: {X_test.shape}, y_test: {y_test.shape}, y_test_onehot: {y_test_onehot.shape}")
+    print(f"X_train: {X_train.shape}, y_train: {y_train.shape}")
+    print(f"X_test: {X_test.shape}, y_test: {y_test.shape}")
+    
+    # Show label meaning
+    print(f"\nLabel encoding:")
+    print(f"Inside star: 0")
+    print(f"Outside star: 1")

@@ -1,15 +1,18 @@
 import numpy as np
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, transpile
 from qiskit.circuit import Parameter
 import matplotlib.pyplot as plt
 from qiskit.circuit.library import EfficientSU2
+from qiskit_aer import AerSimulator
+from qiskit.quantum_info import SparsePauliOp, Statevector
+from functools import reduce
 
 def create_spqc_circuit(t=0, m=2, n=2, r=1):
     """
     Create and return an SPQC circuit with specified parameters.
     
     Args:
-        t: number of additional linear terms (can be 0)
+        t: number of polynomial terms (can be 0)
         m: address register size  
         n: data register size
         r: number of data registers
@@ -49,7 +52,7 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
         sub_models.append(sub_model.to_gate(label=f"model{i}"))
 
     # Create SPQC with classical bits for measurements, append Hadamards and feature maps
-    num_classical_bits = n * r  # One classical bit per data qubit
+    num_classical_bits = n*r + m  # One classical bit per data/address qubit
     qc = QuantumCircuit(total_qubits, num_classical_bits)
     qc.h(address_register)
     if t > 0:
@@ -66,47 +69,52 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
 
     # Append sub-models
     for i in range(L):
-        for p in range(T):
-            if t > 0:
-                t_address = format(p, f'0{t}b')
-            else:
-                t_address = ""
-            m_address = format(i, f'0{m}b')
+        m_address = format(i, f'0{m}b')
 
-            # Apply sub-models for "correct" term addresses
-            if t_address in term_addresses:
-                # Flip 0s to 1s
-                flip_bits(qc, address_register, m_address)
-                flip_bits(qc, term_register, t_address)
+        flip_bits(qc, address_register, m_address)
 
-                # Apply sub-models conditionally
-                for k in range(len(data_registers)):
-                    data_register = data_registers[k]
-                    controlled_sub_model = sub_models[i].control(num_ctrl_qubits=1)
-                    control_qubits = list(term_register) + list(address_register)
-                    qc.mcx(control_qubits, ancilla) # Use helper ancilla to control sub-model
-                    target_qubits = list(data_register)
-                    qc.append(controlled_sub_model, ancilla + target_qubits)
-                    qc.mcx(control_qubits, ancilla) # Reset ancilla
+        if t > 0:
+            # Apply sub-models conditionally
+            for k in range(len(data_registers)):
+                data_register = data_registers[k]
+                controlled_sub_model = sub_models[i].control(num_ctrl_qubits=1)
+                control_qubits = list(term_register)[:k+1] + list(address_register)
+                qc.mcx(control_qubits, ancilla) # Use helper ancilla to control sub-model
+                target_qubits = list(data_register)
+                qc.append(controlled_sub_model, ancilla + target_qubits)
+                qc.mcx(control_qubits, ancilla) # Reset ancilla
 
-                # Flip 1s back to 0s
-                flip_bits(qc, address_register, m_address)
-                flip_bits(qc, term_register, t_address)
+        else:
+            # Apply sub-models conditionally
+            control_qubits = list(address_register)
+            qc.mcx(control_qubits, ancilla) # Use helper ancilla to control sub-model
+            for k in range(len(data_registers)):
+                data_register = data_registers[k]
+                controlled_sub_model = sub_models[i].control(num_ctrl_qubits=1)
+                target_qubits = list(data_register)
+                qc.append(controlled_sub_model, ancilla + target_qubits)
+            qc.mcx(control_qubits, ancilla) # Reset ancilla
 
-            # Create Phi state for "incorrect" term addresses
-            else:
-                # Inverse hadamards
-                qc.h(address_register)
-                if t > 0:
-                    qc.h(term_register)
-                
-                # Inverse feature maps
-                inverse_fm = QuantumCircuit(n)
-                inverse_fm.ry(-input_thetas[0],0)
-                inverse_fm.ry(-input_thetas[1],1)
-                inv_fm = inverse_fm.to_gate()
-                for j in range(len(data_registers)):
-                    qc.append(inv_fm, data_registers[j])
+        flip_bits(qc, address_register, m_address)
+        qc.barrier(label="---")
+
+    # Create Phi state for "incorrect" term addresses (conditional on qubit 0 being |0⟩)
+    if t > 0:
+        qc.x(0)
+        # Inverse feature maps 
+        inverse_fm = QuantumCircuit(n)
+        inverse_fm.ry(-input_thetas[0],0)
+        inverse_fm.ry(-input_thetas[1],1)
+        inv_fm = inverse_fm.to_gate()
+        controlled_inv_fm = inv_fm.control(num_ctrl_qubits=1)
+        for j in range(len(data_registers)):
+            qc.append(controlled_inv_fm, [0] + list(data_registers[j]))
+
+        # Set all data registers to |1>
+        for j in range(len(data_registers)):
+            for qubit in data_registers[j]:
+                qc.cx(0, qubit)
+        qc.barrier(label="---")
 
     # Measure data registers
     classical_bit_index = 0
@@ -114,12 +122,19 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
         for qubit in data_register:
             qc.measure(qubit, classical_bit_index)
             classical_bit_index += 1
+    qc.barrier(label="---")
+
+    # Reset term register
+    if t > 0:
+        qc.h(term_register)
 
     # Create address register ansatz
     address_ansatz = EfficientSU2(m, reps=1, parameter_prefix='address_theta')
     qc.append(address_ansatz, address_register)
 
     # Measure address register
+    for i, qubit in enumerate(address_register):
+        qc.measure(qubit, n*r + i)
     
     return qc
 
@@ -238,9 +253,105 @@ def bind_params(circuit, input_values, random_weights):
 
 def visualize_circuit(qc):
     print(f"Circuit: {qc.num_qubits} qubits, depth {qc.depth()}")
-    qc.draw(output='mpl', fold=40)
+    qc.draw(output='mpl', fold=100)
     plt.show()
 
+def post_select(counts, m, n, r):
+    # reverse each bitstring so that index 0 is the leftmost char
+    fixed = { bitstr[::-1]: ct for bitstr, ct in counts.items() }
+
+    data_size = n*r
+    post = {}
+    for bitstr, count in fixed.items():
+        # now the *last* data_size bits are the data register
+        if bitstr[-data_size:] == '0'*data_size:
+            addr_bits = bitstr[:m]           # first m bits = address
+            post[addr_bits] = post.get(addr_bits, 0) + count
+
+    total = sum(post.values())
+    probs = np.zeros(2**m)
+    if total:
+        for bits, ct in post.items():
+            probs[int(bits, 2)] = ct/total
+    return probs
+
+def pre_select_convert(counts, m, n, r):
+    """
+    Convert raw counts to probability vector over address register 
+    WITHOUT post-selection (includes all measurements).
+    
+    Args:
+        counts: Dictionary of measurement counts
+        m: Number of address register qubits 
+        n: Number of input features
+        r: Polynomial degree
+    
+    Returns:
+        numpy array: Probability vector of size 2^m (before post-selection)
+    """
+    total_shots = sum(counts.values())
+    
+    # Create probability vector for address register (without filtering)
+    address_counts = {}
+    for bitstring, count in counts.items():
+        # Keep only first m bits (address register)
+        address_bits = bitstring[:m]
+        address_counts[address_bits] = address_counts.get(address_bits, 0) + count
+    
+    # Convert to probability vector of size 2^m
+    prob_vector = np.zeros(2**m)
+    for bitstring, count in address_counts.items():
+        index = int(bitstring, 2)
+        prob_vector[index] = count / total_shots
+    
+    return prob_vector
+
+def model(qc, input_vals, weights, t, m, n, r):
+    """
+    Binds input values and weights to circuit
+    Returns post-selected address amplitude vector
+    """
+    # Bind input values and weights to circuit
+    spqc = bind_params(qc, input_vals, weights)
+
+    # Run circuit and extract statevector
+    # sim = AerSimulator(method='statevector') # Construct simulator for circuit
+    # circ = transpile(spqc, sim) # Turn circuit into instructions for simulator  
+    # job = sim.run(circ)
+    # statevector = job.result().get_statevector()
+    statevector = Statevector.from_instruction(spqc).data
+
+    # Create a projection matrix for the pre-postselection statevector
+    P0 = SparsePauliOp(['I','Z'], [0.5, 0.5])
+    I = SparsePauliOp(['I'], [1.0])
+    if t > 0:
+        I_t   = reduce(lambda a,b: a.tensor(b), [P0] * t) # (|0><0|)^{⊗t}
+    I_m   = reduce(lambda a,b: a.tensor(b), [I] * m) # I^{⊗m}
+    P_RUS = reduce(lambda a,b: a.tensor(b), [P0] * n*r) # (|0><0|)^{⊗nr}
+    I_a   = P0 # final ancilla
+    if t > 0:
+        P_pauli = I_t.tensor(I_m).tensor(P_RUS).tensor(I_a) # Combine into the full‐space projector without I_t
+    else:
+        P_pauli = I_m.tensor(P_RUS).tensor(I_a) # Combine into the full‐space projector with I_t
+    P = P_pauli.to_matrix() # Convert to NumPy matrix
+
+    # Apply the projector to the statevector and normalize
+    phi_unnorm = P @ statevector
+    phi = phi_unnorm / np.linalg.norm(phi_unnorm) # This is a 2^N total statevector
+
+    # Extract address register amplitudes
+    N = t + m + n*r + 1
+    tensor = phi.reshape([2]*N) # Turn into N-dimensional tensor (1 axis for each qubit)
+    index = [0]*t + [slice(None)]*m + [0]*(n*r) + [0] # Keep only the address amplitudes since the rest are 0
+    addr = tensor[tuple(index)] # Tensor the only 2 non-zero amplitudes
+    addr_amps = addr.reshape(2**m) # Reshape to 2^m vector
+
+    return addr_amps
+
+# --- ADAM HELPER FUNCTIONS ---
+
+def mse_loss(y_pred, y_true):
+    return float(((y_pred - y_true)**2).mean())
+
 if __name__ == "__main__":
-    qc = create_spqc_circuit(t=0, m=2, n=2, r=1)
-    visualize_circuit(qc)
+    exit()
