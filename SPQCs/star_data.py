@@ -24,15 +24,19 @@ def create_star_boundary(center=(0.5, 0.5), outer_radius=0.3, inner_radius=0.15,
     
     return Path(vertices)
 
-def generate_dataset():
-    """Generate 100 random points with exactly 50 inside and 50 outside the star boundary."""
+def generate_dataset(num_points=100):
+    """Generate random points with balanced inside/outside distribution."""
     np.random.seed(42)  # For reproducibility
     
     # Create star boundary
     star_path = create_star_boundary()
     
+    # Calculate how many points we need inside and outside
+    num_inside = num_points // 2
+    num_outside = num_points - num_inside  # Handle odd numbers
+    
     # Generate many random points to have enough inside and outside
-    num_candidates = 2000
+    num_candidates = max(2000, num_points * 10)  # Scale with desired points
     candidate_points = np.random.uniform(0, 1, (num_candidates, 2))
     
     # Check which points are inside the star
@@ -42,28 +46,28 @@ def generate_dataset():
     inside_candidates = candidate_points[inside_mask]
     outside_candidates = candidate_points[~inside_mask]
     
-    # Select exactly 50 from each group
-    inside_points = inside_candidates[:50] if len(inside_candidates) >= 50 else inside_candidates
-    outside_points = outside_candidates[:50] if len(outside_candidates) >= 50 else outside_candidates
+    # Select the required number from each group
+    inside_points = inside_candidates[:num_inside] if len(inside_candidates) >= num_inside else inside_candidates
+    outside_points = outside_candidates[:num_outside] if len(outside_candidates) >= num_outside else outside_candidates
     
     # If we don't have enough points in either category, generate more
-    while len(inside_points) < 50 or len(outside_points) < 50:
+    while len(inside_points) < num_inside or len(outside_points) < num_outside:
         additional_points = np.random.uniform(0, 1, (1000, 2))
         additional_inside_mask = star_path.contains_points(additional_points)
         
-        if len(inside_points) < 50:
+        if len(inside_points) < num_inside:
             additional_inside = additional_points[additional_inside_mask]
-            inside_points = np.vstack([inside_points, additional_inside])[:50]
+            inside_points = np.vstack([inside_points, additional_inside])[:num_inside]
         
-        if len(outside_points) < 50:
+        if len(outside_points) < num_outside:
             additional_outside = additional_points[~additional_inside_mask]
-            outside_points = np.vstack([outside_points, additional_outside])[:50]
+            outside_points = np.vstack([outside_points, additional_outside])[:num_outside]
     
     return inside_points, outside_points, star_path
 
-def create_labeled_dataset():
+def create_labeled_dataset(num_points=100):
     """Create labeled dataset with scalar labels (0 or 1) and 80/20 split."""
-    inside_points, outside_points, star_path = generate_dataset()
+    inside_points, outside_points, star_path = generate_dataset(num_points)
     
     # Combine all points
     all_points = np.vstack([inside_points, outside_points])
@@ -81,9 +85,9 @@ def create_labeled_dataset():
     
     return X_train, X_test, y_train, y_test, star_path
 
-def visualize_data():
+def visualize_data(num_points=100):
     """Visualize the star boundary dataset with train/test split."""
-    X_train, X_test, y_train, y_test, star_path = get_star_data()
+    X_train, X_test, y_train, y_test, star_path = get_star_data(num_points)
     
     # Labels are already scalar: 0 for inside, 1 for outside
     y_train_binary = y_train.astype(int)
@@ -159,9 +163,12 @@ def visualize_data():
     print(f"Scalar labels:")
     print(f"Inside: 0, Outside: 1")
 
-def get_star_data():
+def get_star_data(num_points=100):
     """
     Get all star classification data without plotting.
+    
+    Args:
+        num_points: Total number of data points to generate (default: 100)
     
     Returns:
         tuple: (X_train, X_test, y_train, y_test, star_path)
@@ -175,14 +182,38 @@ def get_star_data():
         - Inside star: 0
         - Outside star: 1
     """
-    return create_labeled_dataset()
+    return create_labeled_dataset(num_points)
 
 if __name__ == "__main__":
-    # Show visualization and demo when run directly
-    visualize_data()
+    # Demonstrate with different dataset sizes
+    print("Demonstrating configurable dataset sizes:")
+    print("=" * 50)
+    
+    # Test with different sizes
+    sizes_to_test = [50, 100, 200, 500]
+    
+    for size in sizes_to_test:
+        print(f"\nTesting with {size} total points:")
+        X_train, X_test, y_train, y_test, star_path = get_star_data(size)
+        
+        # Count inside/outside for each split
+        train_inside_count = np.sum(y_train == 0)
+        train_outside_count = np.sum(y_train == 1)
+        test_inside_count = np.sum(y_test == 0)
+        test_outside_count = np.sum(y_test == 1)
+        
+        print(f"  Training: {train_inside_count} inside, {train_outside_count} outside")
+        print(f"  Test: {test_inside_count} inside, {test_outside_count} outside")
+        print(f"  Total: {len(X_train) + len(X_test)} points")
+    
+    print("\n" + "=" * 50)
+    print("Showing visualization with 200 points:")
+    
+    # Show visualization with default size
+    visualize_data(200)
     
     # Get data for demonstration
-    X_train, X_test, y_train, y_test, star_path = get_star_data()
+    X_train, X_test, y_train, y_test, star_path = get_star_data(200)
     
     # Demonstrate the data formats
     print(f"\nExample data points:")
@@ -198,3 +229,6 @@ if __name__ == "__main__":
     print(f"\nLabel encoding:")
     print(f"Inside star: 0")
     print(f"Outside star: 1")
+    
+    print(f"\nTo use custom dataset sizes in your code:")
+    print(f"train_features, test_features, train_labels, test_labels, boundary = get_star_data(500)")

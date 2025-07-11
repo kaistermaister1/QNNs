@@ -336,7 +336,7 @@ def model(qc, input_vals, weights, t, m, n, r):
     phi = phi_unnorm / np.linalg.norm(phi_unnorm) # This is a 2^N total statevector
 
     # Print amount of non-zero amplitudes
-    print(f"Amount of non-zero amplitudes: {np.count_nonzero(phi)}")
+    # print(f"Amount of non-zero amplitudes after post-selection: {np.count_nonzero(phi)}")
 
     # Extract address register amplitudes
     N = t + m + n*r + 1
@@ -346,9 +346,9 @@ def model(qc, input_vals, weights, t, m, n, r):
     addr_amps = addr.reshape(2**m) # Reshape to 2^m vector
 
     # Print amount of non-zero amplitudes
-    print(f"Amount of non-zero probabilites after squaring: {np.count_nonzero(addr_amps)}")
-    print(f"addr_amps to probabilities: {np.abs(addr_amps)**2}")
-    print(f"Sum of probabilities: {np.sum(np.abs(addr_amps)**2)}")
+    # print(f"Amount of non-zero probabilites after squaring: {np.count_nonzero(addr_amps)}")
+    # print(f"addr_amps to probabilities: {np.abs(addr_amps)**2}")
+    # print(f"Sum of probabilities: {np.sum(np.abs(addr_amps)**2)}")
 
     return addr_amps
 
