@@ -39,11 +39,7 @@ class ParallelSPQCModel:
             try:
                 from qiskit_aer import AerSimulator
                 self.gpu_simulator = AerSimulator(method='statevector', device='GPU')
-                print("✅ GPU quantum simulation initialized")
-                print("📋 Note: Will fall back to CPU if GPU encounters unsupported operations")
-            except Exception as e:
-                print(f"⚠️  GPU initialization failed: {e}")
-                print("🔄 Using CPU simulation only")
+            except Exception:
                 self.gpu_simulator = None
         else:
             self.gpu_simulator = None
@@ -53,10 +49,8 @@ class ParallelSPQCModel:
             # Try GPU simulation with fallback to CPU
             try:
                 return self.gpu_model(input_vals, weights)
-            except Exception as e:
+            except Exception:
                 if not hasattr(self, '_gpu_fallback_warned'):
-                    print(f"⚠️  GPU simulation failed: {str(e)[:100]}...")
-                    print("🔄 Falling back to CPU simulation for all forward passes")
                     self._gpu_fallback_warned = True
                     self.gpu_simulator = None  # Disable GPU for future calls
                 return model(self.qc, input_vals, weights, self.t, self.m, self.n, self.r)
@@ -130,10 +124,115 @@ class ParallelSPQCModel:
         
         return np.array(grads)
 
+def efficient_mesh_predictions(spqc_model, θ, mesh_points, n_jobs=-1):
+    """Parallel mesh prediction computation using all available CPUs/GPUs"""
+    def predict_batch(points_batch):
+        return [spqc_model.forward(point, θ) for point in points_batch]
+    
+    # Split mesh into batches for parallel processing
+    batch_size = max(1, len(mesh_points) // (4 * abs(n_jobs) if n_jobs != -1 else 4 * os.cpu_count()))
+    batches = [mesh_points[i:i+batch_size] for i in range(0, len(mesh_points), batch_size)]
+    
+    # Process batches in parallel
+    results = Parallel(n_jobs=n_jobs)(
+        delayed(predict_batch)(batch) for batch in batches
+    )
+    
+    # Flatten results
+    mesh_predictions = []
+    for batch_result in results:
+        mesh_predictions.extend(batch_result)
+    
+    return np.array(mesh_predictions)
+
+def visualize_parallel_decision_boundary(spqc_model, θ, m, test_features, test_labels_onehot, mode, boundary=None, title="Decision Boundary", save_path=None):
+    """Efficient parallel decision boundary visualization with saving capability"""
+
+    # Create mesh grid
+    x_min, x_max = 0, 1
+    y_min, y_max = 0, 1
+    xx, yy = np.meshgrid(np.linspace(x_min, x_max, 100), np.linspace(y_min, y_max, 100))
+    mesh_points = np.column_stack([xx.ravel(), yy.ravel()])
+
+    # Get predictions for mesh grid using parallel computation
+    mesh_predictions = efficient_mesh_predictions(spqc_model, θ, mesh_points, n_jobs=N_CPU_WORKERS)
+
+    plt.figure(figsize=(12, 10))
+    ax = plt.gca()
+    
+    true_labels = np.argmax(test_labels_onehot, axis=1)
+
+    if mode == 'wedge':
+        # Plot learned decision regions
+        Z = np.argmax(mesh_predictions, axis=1).reshape(xx.shape)
+        cmap = plt.get_cmap('viridis', 2**m)
+        plt.contourf(xx, yy, Z, cmap=cmap, alpha=0.6, levels=np.arange(-0.5, 2**m, 1))
+        plt.colorbar(ticks=range(2**m), label='Predicted Wedge Class')
+
+        # Plot true wedge boundaries
+        angles = np.linspace(0, 2 * np.pi, 2**m + 1)
+        for angle in angles:
+            ax.plot([0.5, 0.5 + 0.7 * np.cos(angle)], [0.5, 0.5 + 0.7 * np.sin(angle)], 'k:', linewidth=2)
+        
+        # Plot test data
+        plt.scatter(test_features[:, 0], test_features[:, 1], c=true_labels, cmap=cmap, edgecolors='k', s=50)
+
+    elif mode == 'binary':
+        # Only consider first 2 amplitudes for binary classification
+        binary_probs = mesh_predictions[:, :2]
+        # Normalize to get relative probabilities between the two classes
+        binary_probs_normalized = binary_probs / (binary_probs.sum(axis=1, keepdims=True) + 1e-8)
+        Z = binary_probs_normalized[:, 1].reshape(xx.shape)  # Probability of class 1 (outside star)
+        
+        contourf = plt.contourf(xx, yy, Z, levels=20, cmap='RdYlBu_r', alpha=0.8)
+        plt.colorbar(contourf, label='P(Outside Star | First 2 Classes)')
+        
+        # Plot learned p=0.5 decision boundary
+        plt.contour(xx, yy, Z, levels=[0.5], colors='green', linewidths=2.5)
+        
+        # Plot true star boundary
+        if boundary:
+            vertices = boundary.vertices
+            plt.plot(vertices[:, 0], vertices[:, 1], 'k:', linewidth=3, label='True Boundary')
+        
+        # Plot test data
+        inside = test_features[true_labels == 0]
+        outside = test_features[true_labels == 1]
+        plt.scatter(inside[:, 0], inside[:, 1], c='red', s=40, alpha=0.7, marker='s', label='Inside')
+        plt.scatter(outside[:, 0], outside[:, 1], c='blue', s=40, alpha=0.7, marker='s', label='Outside')
+        plt.legend()
+
+    plt.xlim(0, 1); plt.ylim(0, 1); plt.grid(True, alpha=0.2)
+    plt.title(title); plt.xlabel('X coordinate'); plt.ylabel('Y coordinate')
+    ax.set_aspect('equal', adjustable='box')
+    plt.tight_layout()
+    
+    # Save the plot if path provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    
+    plt.show()
+
+    # Calculate accuracy on the mesh grid
+    if mode == 'binary' and boundary is not None:
+        true_mesh_labels = np.array([0 if boundary.contains_point(p) else 1 for p in mesh_points])
+        pred_mesh_labels = np.argmax(mesh_predictions[:, :2], axis=1)
+    elif mode == 'wedge':
+        true_mesh_labels = np.argmax(wedge_onehot(mesh_points, m), axis=1)
+        pred_mesh_labels = np.argmax(mesh_predictions, axis=1)
+    else:
+        true_mesh_labels = None
+        pred_mesh_labels = None
+        
+    if true_mesh_labels is not None:
+        mesh_accuracy = np.mean(pred_mesh_labels == true_mesh_labels)
+    else:
+        mesh_accuracy = None
+
+    return mesh_accuracy
+
 def main():
-    print("🚀 Starting supercomputer training...")
-    print(f"Configuration: {epochs} epochs, {num_data_points} data points")
-    print(f"CPUs: {N_CPU_WORKERS} workers, GPU: {USE_GPU}, Memory efficient: {MEMORY_EFFICIENT}")
+    print(f"Starting SPQC training: {epochs} epochs, {num_data_points} data points")
     
     # Load data
     train_features, test_features, train_labels, test_labels, boundary = get_star_data(num_data_points)
@@ -154,20 +253,27 @@ def main():
     train_labels_onehot = np.eye(8)[train_labels.astype(int)]
     test_labels_onehot = np.eye(8)[test_labels.astype(int)]
     
-    print(f"Training with {len(θ)} parameters on {len(train_features)} samples")
-    
-    # Report actual resource usage
+    # Report resource usage
     import multiprocessing
     actual_cpu_workers = multiprocessing.cpu_count() if N_CPU_WORKERS == -1 else N_CPU_WORKERS
-    print(f"Using {actual_cpu_workers} CPU cores for parallel gradients")
-    if USE_GPU and spqc_model.gpu_simulator is not None:
-        print(f"GPU acceleration: ENABLED ({N_GPUS} GPUs)")
-    else:
-        print("GPU acceleration: DISABLED (CPU-only mode)")
+    print(f"Using {actual_cpu_workers} CPU cores, GPU: {'ON' if USE_GPU and spqc_model.gpu_simulator else 'OFF'}")
+    
+    # Create plots directory early
+    plots_dir = "plots"
+    os.makedirs(plots_dir, exist_ok=True)
     
     # Initial evaluation
-    print("Initial performance:")
+    print("\nInitial evaluation:")
     evaluate_model(spqc_model, θ, test_features, test_labels_onehot, CLASSIFICATION_MODE, "Initial")
+    
+    # Initial decision boundary visualization
+    initial_boundary_path = os.path.join(plots_dir, f"initial_decision_boundary_{CLASSIFICATION_MODE}_{num_data_points}pts.png")
+    visualize_parallel_decision_boundary(
+        spqc_model, θ, m, test_features, test_labels_onehot, 
+        CLASSIFICATION_MODE, boundary, 
+        title=f"Initial Decision Boundary ({CLASSIFICATION_MODE})", 
+        save_path=initial_boundary_path
+    )
     
     # Training with parallel gradients
     m1, v1 = np.zeros_like(θ), np.zeros_like(θ)
@@ -179,32 +285,18 @@ def main():
     # Main training loop with progress bars
     with tqdm(range(1, epochs + 1), desc="Training Progress", unit="epoch") as epoch_pbar:
         for epoch in epoch_pbar:
-            # Process all samples with inner progress bar
+            # Process all samples  
             epoch_gradients = []
             epoch_loss = 0.0
-            sample_pbar = tqdm(
-                zip(train_features, train_labels_onehot), 
-                total=len(train_features), 
-                desc=f"Epoch {epoch}", 
-                leave=False,
-                unit="sample"
-            )
             
-            current_loss = 0.0
-            for sample_idx, (x, y_true) in enumerate(sample_pbar):
+            for sample_idx, (x, y_true) in enumerate(zip(train_features, train_labels_onehot)):
                 # Compute loss for this sample
                 sample_loss = spqc_model.loss(x, θ, y_true)
                 epoch_loss += sample_loss
                 
-                # Show gradient progress for first few samples of early epochs
-                show_grad_progress = (sample_idx < 3) and (epoch <= 5)
-                g = spqc_model.parallel_gradient(x, θ, y_true, show_progress=show_grad_progress)
+                # Compute gradients
+                g = spqc_model.parallel_gradient(x, θ, y_true, show_progress=False)
                 epoch_gradients.append(g)
-                
-                # Update loss display every 10 samples
-                if sample_idx % 10 == 0:
-                    current_loss = sample_loss
-                    sample_pbar.set_postfix(loss=f"{current_loss:.4f}")
             
             # Average gradients
             g = np.mean(epoch_gradients, axis=0)
@@ -226,18 +318,12 @@ def main():
                 progress=f"{epoch/epochs*100:.1f}%"
             )
             
-            # More frequent evaluation for 5000 epochs
-            if epoch % 500 == 0:
-                print(f"\n--- Intermediate Evaluation at Epoch {epoch} ---")
+            # Periodic evaluation
+            if epoch % 1000 == 0:
                 accuracy = evaluate_model(spqc_model, θ, test_features, test_labels_onehot, CLASSIFICATION_MODE, f"Epoch {epoch}")
-                print(f"Intermediate accuracy at epoch {epoch}: {accuracy:.4f}")
-                # Small delay to let tqdm update properly
+                print(f"Epoch {epoch} accuracy: {accuracy:.4f}")
                 import time
                 time.sleep(0.1)
-    
-    # Create plots directory if it doesn't exist
-    plots_dir = "plots"
-    os.makedirs(plots_dir, exist_ok=True)
     
     # Plot and save loss curve
     plt.figure(figsize=(12, 8))
@@ -259,19 +345,27 @@ def main():
     loss_plot_path = os.path.join(plots_dir, f"parallel_training_loss_{CLASSIFICATION_MODE}_{num_data_points}pts_{epochs}epochs.png")
     plt.savefig(loss_plot_path, dpi=300, bbox_inches='tight')
     plt.show()
-    print(f"\n📊 Loss plot saved to: {loss_plot_path}")
     
     # Final evaluation
-    print("Final performance:")
+    print("\nFinal evaluation:")
     accuracy = evaluate_model(spqc_model, θ, test_features, test_labels_onehot, CLASSIFICATION_MODE, "Final")
-    print(f"🎉 Training complete! Final accuracy: {accuracy:.4f}")
     
-    # Print some training statistics
-    print(f"\n📈 Training Statistics:")
-    print(f"   Initial loss: {epoch_losses[0]:.6f}")
-    print(f"   Final loss: {epoch_losses[-1]:.6f}")
-    print(f"   Loss reduction: {((epoch_losses[0] - epoch_losses[-1]) / epoch_losses[0] * 100):.2f}%")
-    print(f"   Min loss achieved: {min(epoch_losses):.6f} at epoch {epoch_losses.index(min(epoch_losses)) + 1}")
+    # Final decision boundary visualization
+    final_boundary_path = os.path.join(plots_dir, f"final_decision_boundary_{CLASSIFICATION_MODE}_{num_data_points}pts_{epochs}epochs.png")
+    final_mesh_accuracy = visualize_parallel_decision_boundary(
+        spqc_model, θ, m, test_features, test_labels_onehot, 
+        CLASSIFICATION_MODE, boundary, 
+        title=f"Final Decision Boundary ({CLASSIFICATION_MODE}, {epochs} epochs)", 
+        save_path=final_boundary_path
+    )
+    
+    # Training summary
+    print(f"\nTraining complete:")
+    print(f"   Loss: {epoch_losses[0]:.6f} → {epoch_losses[-1]:.6f}")
+    print(f"   Test accuracy: {accuracy:.4f}")
+    if final_mesh_accuracy is not None:
+        print(f"   Mesh accuracy: {final_mesh_accuracy:.4f}")
+    print(f"   Files saved: loss curve + 2 decision boundaries")
 
 if __name__ == "__main__":
     main() 
