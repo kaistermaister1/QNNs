@@ -317,40 +317,20 @@ def model(qc, input_vals, weights, t, m, n, r):
     # Run circuit and extract statevector
     statevector = Statevector.from_instruction(spqc).data
 
-    # Create a projection matrix for the pre-postselection statevector
-    P0 = SparsePauliOp(['I','Z'], [0.5, 0.5])
-    I = SparsePauliOp(['I'], [1.0])
-    if t > 0:
-        I_t   = reduce(lambda a,b: a.tensor(b), [P0] * t) # (|0><0|)^{⊗t}
-    I_m   = reduce(lambda a,b: a.tensor(b), [I] * m) # I^{⊗m}
-    P_RUS = reduce(lambda a,b: a.tensor(b), [P0] * n*r) # (|0><0|)^{⊗nr}
-    I_a   = P0 # final ancilla
-    if t > 0:
-        P_pauli = I_t.tensor(I_m).tensor(P_RUS).tensor(I_a) # Combine into the full‐space projector without I_t
-    else:
-        P_pauli = I_m.tensor(P_RUS).tensor(I_a) # Combine into the full‐space projector with I_t
-    P = P_pauli.to_matrix() # Convert to NumPy matrix
+    # Direct post‑selection via tensor slicing
+    N = t + m + n * r + 1                   # total qubits
+    tensor = statevector.reshape([2] * N)   # view, no copy
 
-    # Apply the projector to the statevector and normalize
-    phi_unnorm = P @ statevector
-    phi = phi_unnorm / np.linalg.norm(phi_unnorm) # This is a 2^N total statevector
+    slice_spec = [0] * t                   \
+               + [slice(None)] * m         \
+               + [0] * (n * r)             \
+               + [0]                       # ancilla
 
-    # Print amount of non-zero amplitudes
-    # print(f"Amount of non-zero amplitudes after post-selection: {np.count_nonzero(phi)}")
+    addr = tensor[tuple(slice_spec)].reshape(2 ** m)
 
-    # Extract address register amplitudes
-    N = t + m + n*r + 1
-    tensor = phi.reshape([2]*N) # Turn into N-dimensional tensor (1 axis for each qubit)
-    index = [0]*t + [slice(None)]*m + [0]*(n*r) + [0] # Keep only the address amplitudes since the rest are 0
-    addr = tensor[tuple(index)] # Tensor the only 2 non-zero amplitudes
-    addr_amps = addr.reshape(2**m) # Reshape to 2^m vector
-
-    # Print amount of non-zero amplitudes
-    # print(f"Amount of non-zero probabilites after squaring: {np.count_nonzero(addr_amps)}")
-    # print(f"addr_amps to probabilities: {np.abs(addr_amps)**2}")
-    # print(f"Sum of probabilities: {np.sum(np.abs(addr_amps)**2)}")
-
-    return addr_amps
+    # Renormalise
+    norm = np.linalg.norm(addr)
+    return addr / norm if norm != 0 else addr
 
 # --- ADAM HELPER FUNCTIONS ---
 

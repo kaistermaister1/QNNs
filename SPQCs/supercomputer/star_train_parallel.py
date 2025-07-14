@@ -65,11 +65,10 @@ class ParallelSPQCModel:
             return model(self.qc, input_vals, weights, self.t, self.m, self.n, self.r)
     
     def gpu_model(self, input_vals, weights):
-        """GPU-accelerated quantum simulation with proper post-selection"""
+        """GPU-accelerated quantum simulation with tensor slicing post-selection"""
         from star_spqc import bind_params
-        from qiskit.quantum_info import SparsePauliOp, Statevector
+        from qiskit.quantum_info import Statevector
         from qiskit import transpile
-        from functools import reduce
         
         # Bind parameters
         spqc = bind_params(self.qc, input_vals, weights)
@@ -85,33 +84,20 @@ class ParallelSPQCModel:
         job = self.gpu_simulator.run(decomposed_circuit, shots=1)
         statevector = job.result().get_statevector().data
         
-        # Apply same post-selection as original model
-        P0 = SparsePauliOp(['I','Z'], [0.5, 0.5])
-        I = SparsePauliOp(['I'], [1.0])
-        
-        if self.t > 0:
-            I_t = reduce(lambda a,b: a.tensor(b), [P0] * self.t)
-        I_m = reduce(lambda a,b: a.tensor(b), [I] * self.m)
-        P_RUS = reduce(lambda a,b: a.tensor(b), [P0] * self.n*self.r)
-        I_a = P0
-        
-        if self.t > 0:
-            P_pauli = I_t.tensor(I_m).tensor(P_RUS).tensor(I_a)
-        else:
-            P_pauli = I_m.tensor(P_RUS).tensor(I_a)
-        
-        P = P_pauli.to_matrix()
-        
-        # Apply projector and normalize
-        phi_unnorm = P @ statevector
-        phi = phi_unnorm / np.linalg.norm(phi_unnorm)
-        
-        # Extract address register amplitudes
-        N = self.t + self.m + self.n*self.r + 1
-        tensor = phi.reshape([2]*N)
-        index = [0]*self.t + [slice(None)]*self.m + [0]*(self.n*self.r) + [0]
-        addr = tensor[tuple(index)]
-        return addr.reshape(2**self.m)
+        # Direct post‑selection via tensor slicing (same as updated star_spqc.py)
+        N = self.t + self.m + self.n * self.r + 1                   # total qubits
+        tensor = statevector.reshape([2] * N)   # view, no copy
+
+        slice_spec = [0] * self.t                   \
+                   + [slice(None)] * self.m         \
+                   + [0] * (self.n * self.r)        \
+                   + [0]                            # ancilla
+
+        addr = tensor[tuple(slice_spec)].reshape(2 ** self.m)
+
+        # Renormalise
+        norm = np.linalg.norm(addr)
+        return addr / norm if norm != 0 else addr
     
     def loss(self, x, θ, y_true_onehot):
         amps = self.forward(x, θ)
