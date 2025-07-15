@@ -112,33 +112,30 @@ def make_projectors(t, m, k):               # k = n*r
 # Helper function to create appropriate Estimator
 def create_estimator():
     """Create the appropriate Estimator based on available imports and GPU settings"""
-    # Try different estimator options in order of preference for gradient compatibility
-    
-    # Option 1: Try AerEstimator with backend (most reliable for gradients)
-    try:
-        device = "GPU" if (USE_GPU and N_GPUS > 0) else "CPU"
-        backend = AerSimulator(method="statevector", device=device)
-        return AerEstimator(backend=backend)
-    except NameError:
-        pass
-    
-    # Option 2: Try StatevectorEstimator (V2 API)
+    # For V2, try to pass backend_options for GPU. If it fails, create without.
     if USE_STATEVECTOR_ESTIMATOR:
         try:
+            backend_opts = {"device": "GPU"} if (USE_GPU and N_GPUS > 0) else {}
+            # This is the modern way to request GPU execution for V2 primitives
+            return StatevectorEstimator(backend_options=backend_opts)
+        except TypeError:
+            # Fallback for older versions that don't support backend_options
             return StatevectorEstimator()
-        except:
-            pass
     
-    # Option 3: Try BasicEstimator with backend as fallback
-    try:
+    # For V1, use AerEstimator with an explicit AerSimulator backend
+    else:
         device = "GPU" if (USE_GPU and N_GPUS > 0) else "CPU"
         backend = AerSimulator(method="statevector", device=device)
-        return BasicEstimator(backend=backend)
-    except (NameError, TypeError):
-        pass
-    
-    # Option 4: BasicEstimator without backend
-    return BasicEstimator()
+        try:
+            # Try AerEstimator first (from qiskit_aer.primitives)
+            return AerEstimator(backend=backend)
+        except NameError:
+            # Fall back to BasicEstimator if AerEstimator not available
+            try:
+                return BasicEstimator(backend=backend) 
+            except TypeError:
+                # If backend param not supported, use without it
+                return BasicEstimator()
 
 # per‑process/thread globals for estimator and gradients
 g_est = None  
@@ -146,6 +143,7 @@ g_grd = None
 g_proj_fn = None
 g_template = None
 g_params = None
+g_weight_idxs = None
 EPS = 1e-10
 
 # shared objects for Windows threads
@@ -154,6 +152,7 @@ shared_grd = None
 shared_proj_fn = None
 shared_template = None
 shared_params = None
+shared_weight_idxs = None
 
 def worker_init(qc, t, m, n, r):
     """Initialize per-worker estimator, gradient calculator, and projectors"""
@@ -170,10 +169,17 @@ def worker_init(qc, t, m, n, r):
     template = transpile(qc, optimization_level=0, layout_method="trivial")
     proj_fn = make_projectors(t, m, n*r)
     
+    # Pre-calculate weight indices for slicing gradients
+    params = list(template.parameters)
+    model_params = [p for p in params if p.name.startswith('model')]
+    address_params = [p for p in params if p.name.startswith('address_theta')]
+    weight_idxs = [params.index(p) for p in (model_params + address_params)]
+
     globals().update(
         g_est=est, g_grd=grd,
         g_proj_fn=proj_fn,
-        g_template=template, g_params=list(template.parameters)
+        g_template=template, g_params=params,
+        g_weight_idxs=weight_idxs
     )
     print(f'init pid={os.getpid()} done; params={len(g_params)} gpu={worker_gpu_id}')
 
@@ -184,8 +190,10 @@ def loss_and_grad(theta, label, x, t, m, n, r):
         est = shared_est
         grd = shared_grd
         proj_fn = shared_proj_fn
-        template = shared_template
+        # Create a thread-local copy of the circuit to prevent race conditions
+        template = shared_template.copy()
         params = shared_params
+        weight_idxs = shared_weight_idxs
     else:  # Linux/HPC processes
         if g_params is None:
             raise RuntimeError(f"Worker pid={os.getpid()} started without initialisation")
@@ -194,11 +202,12 @@ def loss_and_grad(theta, label, x, t, m, n, r):
         proj_fn = g_proj_fn
         template = g_template
         params = g_params
+        weight_idxs = g_weight_idxs
     
     # Create parameter binding for input and weights
     param_binding = {}
     
-    # Get parameter types
+    # Get parameter types (needed for binding)
     input_params = [p for p in params if p.name.startswith('input_theta')]
     model_params = [p for p in params if p.name.startswith('model')]
     address_params = [p for p in params if p.name.startswith('address_theta')]
@@ -229,7 +238,7 @@ def loss_and_grad(theta, label, x, t, m, n, r):
         else:
             param_binding[param] = 0.0
     
-    # Create values list aligned with template parameter order (cache for efficiency)
+    # Create values list aligned with template parameter order
     values = [param_binding[p] for p in params]
     
     # Get projector for this class label
@@ -258,8 +267,7 @@ def loss_and_grad(theta, label, x, t, m, n, r):
     grad = -d_p / (p_val + EPS)
     
     # Keep grads for model + address params only (slice to match theta shape)
-    weight_idxs = [params.index(p) for p in (model_params + address_params)]
-    grad = grad[weight_idxs]   # 1‑D NumPy array, len == len(theta)
+    grad = grad[weight_idxs]
     
     return loss, grad
 
@@ -391,7 +399,7 @@ def main():
     print("Pre-imported qiskit libraries")
     
     # Use threads on Windows, processes on Linux/HPC for best compatibility
-    global shared_est, shared_grd, shared_proj_fn, shared_template, shared_params
+    global shared_est, shared_grd, shared_proj_fn, shared_template, shared_params, shared_weight_idxs
     
     if os.name == 'nt':  # Windows
         print("Using thread-based parallelism for Windows compatibility...")
@@ -407,6 +415,12 @@ def main():
         shared_template = transpile(qc, optimization_level=0, layout_method="trivial")
         shared_proj_fn = make_projectors(t, m, n*r)
         shared_params = list(shared_template.parameters)
+        
+        # Pre-calculate and share weight indices
+        model_params = [p for p in shared_params if p.name.startswith('model')]
+        address_params = [p for p in shared_params if p.name.startswith('address_theta')]
+        shared_weight_idxs = [shared_params.index(p) for p in (model_params + address_params)]
+
         print(f"Shared template ready with {len(shared_params)} parameters")
     else:  # Linux/HPC
         print("Using process-based parallelism for HPC performance...")
