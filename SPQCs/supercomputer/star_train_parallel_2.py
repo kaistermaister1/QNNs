@@ -5,8 +5,13 @@ efficient gradient computation compared to manual parameter-shift gradients.
 """
 from __future__ import annotations
 import os, sys, time, argparse, multiprocessing as mp
+import time, collections
 from contextlib import suppress
 from typing import List
+import warnings
+
+# Suppress the benign ComplexWarning from qiskit_algorithms
+warnings.filterwarnings('ignore', category=UserWarning, module='qiskit_algorithms')
 
 import numpy as np
 import matplotlib
@@ -35,6 +40,15 @@ sys.path.append(os.path.dirname(ROOT))
 from star_data import get_star_data
 from star_spqc import create_spqc_circuit, create_random_weights
 from star_eval import evaluate_model
+
+# ───────── Benchmarking Harness ─────────
+bench = collections.defaultdict(list)  # label → [times]
+
+class lap:
+    def __init__(self, label): self.label = label
+    def __enter__(self): self.t0 = time.perf_counter()
+    def __exit__(self, *exc):
+        bench[self.label].append(time.perf_counter() - self.t0)
 
 # ───────── CLI args ─────────
 parser = argparse.ArgumentParser("SPQC trainer (Observable-based with ReverseEstimatorGradient)")
@@ -183,7 +197,7 @@ def worker_init(qc, t, m, n, r):
     )
     print(f'init pid={os.getpid()} done; params={len(g_params)} gpu={worker_gpu_id}')
 
-def loss_and_grad(theta, label, x, t, m, n, r):
+def loss_and_grad(theta, label, x, t, m, n, r, ep, i):
     """Compute loss and gradient using observable-based approach"""
     # Get objects from appropriate source (threads vs processes)
     if os.name == 'nt':  # Windows threads
@@ -251,17 +265,26 @@ def loss_and_grad(theta, label, x, t, m, n, r):
     if is_v2_estimator:
         # V2 Estimator with V1 Gradient
         pub = (template, proj, values)
-        est_result = est.run([pub]).result()
+        with lap("estimator.adjoint"):
+            est_result = est.run([pub]).result()
         p_val = est_result[0].data.evs
         
         # ReverseEstimatorGradient always uses V1 API
-        grd_result = grd.run([template], [proj], [values]).result()
+        with lap("gradient.adjoint"):
+            grd_result = grd.run([template], [proj], [values]).result()
         d_p = grd_result.gradients[0]
     else:
         # V1 Estimator with V1 Gradient
-        p_val = est.run([template], [proj], [values]).result().values[0]
-        d_p = grd.run([template], [proj], [values]).result().gradients[0]
-    
+        with lap("estimator.adjoint"):
+            p_val = est.run([template], [proj], [values]).result().values[0]
+        with lap("gradient.adjoint"):
+            d_p = grd.run([template], [proj], [values]).result().gradients[0]
+        
+        # Optional: run a shot-based baseline on the first sample of the first epoch
+        if ep == 0 and i == 0:
+            with lap("estimator.shots2k"):
+                est.run([template], [proj], [values], shots=2048).result().values[0]
+
     # Compute negative log-likelihood loss and gradient
     loss = -np.log(p_val + EPS)
     grad = -d_p / (p_val + EPS)
@@ -360,7 +383,11 @@ def main():
             test_backend.run(transpile(test_qc, test_backend), shots=1).result()
             print("GPU backend verified")
         except Exception as e:
-            print(f"GPU fallback: {e} → CPU only")
+            msg = str(e)
+            print(f"GPU fallback: {msg} → CPU only")
+            if "not supported on this system" in msg:
+                print("\nHint: This error usually means you need to install the GPU-enabled version of Qiskit Aer.")
+                print("Try running: pip uninstall qiskit-aer -y && pip install qiskit-aer-gpu\n")
             USE_GPU = False
 
     Xtr, Xte, ytr, yte, _ = get_star_data(300)
@@ -447,7 +474,7 @@ def main():
     for ep in tqdm(range(ARGS.epochs), desc='Epoch'):
         # Compute loss and gradients for each sample
         results = pool(
-            delayed(loss_and_grad)(theta, ytr[i], Xtr[i], t, m, n, r) 
+            delayed(loss_and_grad)(theta, ytr[i], Xtr[i], t, m, n, r, ep, i) 
             for i in range(len(Xtr))
         )
         
@@ -468,7 +495,16 @@ def main():
         # Track average loss
         avg_loss = np.mean(sample_losses)
         losses.append(avg_loss)
-        print(f"Epoch {ep+1}: Average Loss = {avg_loss:.6f}")
+
+        # Report benchmark results at the end of the epoch
+        def summarize(label):
+            arr = np.array(bench.pop(label, []))
+            return f"{1e3*np.mean(arr):.1f}ms" if len(arr) > 0 else "–"
+        
+        print(f"Epoch {ep+1}: Loss {avg_loss:.4f} | "
+              f"Fwd {summarize('estimator.adjoint')} | "
+              f"Grad {summarize('gradient.adjoint')} | "
+              f"Shots {summarize('estimator.shots2k')}")
 
     evaluate_model(make_wrapper(qc, t, m, n, r), theta, Xte, Yte, 'binary', 'Final')
 

@@ -1,6 +1,6 @@
-"""star_train_parallel.py – batched gradient + cached transpile (fixed)
+"""
 ====================================================================
-This version compiles and runs; previous update was truncated.
+This version computes the gradient using CPU/GPU parallelized parameter-shift on a post-selected statevector. Samples are also computed in parallel.
 """
 from __future__ import annotations
 import os, sys, time, argparse, multiprocessing as mp
@@ -229,7 +229,11 @@ def main():
             test_backend.run(transpile(test_qc, test_backend), shots=1).result()
             print("GPU backend verified")
         except Exception as e:
-            print(f"GPU fallback: {e} → CPU only")
+            msg = str(e)
+            print(f"GPU fallback: {msg} → CPU only")
+            if "not supported on this system" in msg:
+                print("\nHint: This error usually means you need to install the GPU-enabled version of Qiskit Aer.")
+                print("Try running: pip uninstall qiskit-aer -y && pip install qiskit-aer-gpu\n")
             USE_GPU = False
     
     Xtr,Xte,ytr,yte,_=get_star_data(300)
