@@ -132,6 +132,8 @@ parser.add_argument("--lr", type=float, default=0.01, help="Learning rate for Ad
 parser.add_argument("--profile", action="store_true", help="Run in profiling mode (short epochs, extra logging)")
 parser.add_argument("--small-fast", action="store_true",
     help="Force old small-qubit training path (per-sample Estimator calls, light transpile).")
+parser.add_argument("--force-batched", action="store_true",
+    help="Force batched training approach even for small circuits.")
 ARGS = parser.parse_args()
 BATCH = 1  # Batch size for processing samples
 
@@ -524,7 +526,7 @@ def main():
 
     t, m, n, r = 0, 3, 2, 1
     num_qubits = t + m + n * r + 1
-    FORCE_SMALL = ARGS.small_fast or (num_qubits <= 12)  # auto for <=12 unless user overrides later
+    FORCE_SMALL = ARGS.small_fast or (num_qubits <= 12 and not ARGS.force_batched)  # auto for <=12 unless user overrides
 
     frame = create_spqc_circuit(t=t, m=m, n=n, r=r)
     qc = QuantumCircuit(frame.num_qubits, name="SPQC")
