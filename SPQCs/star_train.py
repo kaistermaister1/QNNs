@@ -39,6 +39,8 @@ for instr in spqc_frame.data:
     if instr.operation.name != 'measure':
         qc_qnn.append(instr.operation, instr.qubits, instr.clbits)
 
+visualize_circuit(qc_qnn)
+
 # --- Create SPQC model ---
 class SPQCModel:
     def __init__(self, qc, t, m, n, r):

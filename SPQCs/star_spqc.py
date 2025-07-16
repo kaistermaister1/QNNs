@@ -306,7 +306,7 @@ def pre_select_convert(counts, m, n, r):
     
     return prob_vector
 
-def model(qc, input_vals, weights, t, m, n, r):
+def model(qc, input_vals, weights, t, m, n, r, backend=None):
     """
     Binds input values and weights to circuit
     Returns post-selected address amplitude vector
@@ -315,7 +315,13 @@ def model(qc, input_vals, weights, t, m, n, r):
     spqc = bind_params(qc, input_vals, weights)
 
     # Run circuit and extract statevector
-    statevector = Statevector.from_instruction(spqc).data
+    if backend is not None:
+        # Use the provided backend (e.g., GPU-enabled AerSimulator)
+        job = backend.run(spqc, shots=1)
+        statevector = job.result().get_statevector().data
+    else:
+        # Default statevector simulation
+        statevector = Statevector.from_instruction(spqc).data
 
     # Direct post‑selection via tensor slicing
     N = t + m + n * r + 1                   # total qubits
