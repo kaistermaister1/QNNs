@@ -64,6 +64,7 @@ g_backend=None; g_template=None; g_params=None
 shared_backend=None; shared_template=None; shared_params=None
 
 def worker_init(qc):
+    """Initialize per-worker AerSimulator and transpiled circuit."""
     print(f'init pid={os.getpid()} start')
     
     # Assign GPU to this worker (round-robin by process ID)
@@ -71,7 +72,11 @@ def worker_init(qc):
     assign_visible_gpu(worker_gpu_id)
     
     dev = "GPU" if (USE_GPU and N_GPUS > 0) else "CPU"
-    backend  = AerSimulator(method="statevector", device=dev)
+    sim_kwargs = {'method': "statevector", 'device': dev}
+    if dev == "CPU":
+        sim_kwargs['disable_pygate_callback'] = True
+    backend  = AerSimulator(**sim_kwargs)
+
     template = transpile(qc, backend, optimization_level=0, layout_method="trivial")
     globals().update(g_backend=backend, g_template=template, g_params=list(template.parameters))
     print(f'init pid={os.getpid()} done; params={len(g_params)} gpu={worker_gpu_id}')
@@ -281,7 +286,12 @@ def main():
         print("Pre-building shared backend and template...")
         assign_visible_gpu(0)  # Set GPU for main thread
         dev = "GPU" if (USE_GPU and N_GPUS > 0) else "CPU"
-        shared_backend = AerSimulator(method="statevector", device=dev)
+        
+        sim_kwargs = {'method': "statevector", 'device': dev}
+        if dev == "CPU":
+            sim_kwargs['disable_pygate_callback'] = True
+        shared_backend = AerSimulator(**sim_kwargs)
+        
         shared_template = transpile(qc, shared_backend, optimization_level=0, layout_method="trivial")
         shared_params = list(shared_template.parameters)
         print(f"Shared template ready with {len(shared_params)} parameters")

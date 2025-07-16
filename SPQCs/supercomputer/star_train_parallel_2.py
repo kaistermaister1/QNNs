@@ -4,16 +4,16 @@ This version uses observables and Qiskit's ReverseEstimatorGradient for more
 efficient gradient computation compared to manual parameter-shift gradients.
 """
 from __future__ import annotations
-import os, sys, time, argparse, multiprocessing as mp
-import time, collections
+import os, sys, time, argparse, warnings, multiprocessing as mp
+from collections import defaultdict  # needed by lap class
 from contextlib import suppress
-from typing import List
-import warnings
-
-# Suppress the benign ComplexWarning from qiskit_algorithms
-warnings.filterwarnings('ignore', category=UserWarning, module='qiskit_algorithms')
+from typing import List, Tuple
 
 import numpy as np
+
+warnings.filterwarnings('ignore', category=UserWarning, module='qiskit_algorithms')
+warnings.filterwarnings('ignore', message='.*Casting complex values to real.*', module='qiskit_algorithms')
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -42,13 +42,43 @@ from star_spqc import create_spqc_circuit, create_random_weights
 from star_eval import evaluate_model
 
 # ───────── Benchmarking Harness ─────────
-bench = collections.defaultdict(list)  # label → [times]
+bench = defaultdict(list)  # label → [times]
 
 class lap:
-    def __init__(self, label): self.label = label
-    def __enter__(self): self.t0 = time.perf_counter()
-    def __exit__(self, *exc):
-        bench[self.label].append(time.perf_counter() - self.t0)
+    bench = defaultdict(list)
+    def __init__(self, label, sync_cuda=False):
+        self.label = label
+        self.sync_cuda = sync_cuda
+
+    def __enter__(self):
+        self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *args):
+        # Store lap time in a class-level dictionary
+        lap.bench[self.label].append(time.perf_counter() - self.t0)
+  
+    @classmethod
+    def reset(cls):
+        cls.bench.clear()
+
+    @classmethod
+    def summary_str(cls):
+        if not cls.bench:
+            return "Fwd – | Grad – | Shots –"
+        
+        items = []
+        
+        # Sum times from all batches in the epoch
+        fwd_t = np.sum(cls.bench.get("estimator.run", [])) + np.sum(cls.bench.get("estimator.adjoint", []))
+        grd_t = np.sum(cls.bench.get("gradient.run", []))
+        shots = len(cls.bench.get("estimator.run", [])) + len(cls.bench.get("estimator.adjoint", []))
+
+        items.append(f"Fwd {fwd_t*1000:.1f}ms" if fwd_t > 0 else "Fwd –")
+        items.append(f"Grad {grd_t*1000:.1f}ms" if grd_t > 0 else "Grad –")
+        items.append(f"Shots {shots}")
+
+        return " | ".join(items)
 
 # ───────── CLI args ─────────
 parser = argparse.ArgumentParser("SPQC trainer (Observable-based with ReverseEstimatorGradient)")
@@ -57,6 +87,7 @@ parser.add_argument("--gpus",  type=int, default=None)
 parser.add_argument("--no-gpu", action="store_true")
 parser.add_argument("--epochs", type=int, default=1)
 ARGS = parser.parse_args()
+BATCH = 1  # Batch size for processing samples
 
 # resources
 OS_CPUS     = mp.cpu_count()
@@ -129,8 +160,12 @@ def create_estimator():
     # For V2, try to pass backend_options for GPU. If it fails, create without.
     if USE_STATEVECTOR_ESTIMATOR:
         try:
-            backend_opts = {"device": "GPU"} if (USE_GPU and N_GPUS > 0) else {}
-            # This is the modern way to request GPU execution for V2 primitives
+            if USE_GPU and N_GPUS > 0:
+                backend_opts = {"device": "GPU"}
+            else:
+                # Apply CPU-specific optimization to avoid Python gate overhead
+                backend_opts = {"disable_pygate_callback": True}
+            
             return StatevectorEstimator(backend_options=backend_opts)
         except TypeError:
             # Fallback for older versions that don't support backend_options
@@ -139,7 +174,13 @@ def create_estimator():
     # For V1, use AerEstimator with an explicit AerSimulator backend
     else:
         device = "GPU" if (USE_GPU and N_GPUS > 0) else "CPU"
-        backend = AerSimulator(method="statevector", device=device)
+        
+        sim_kwargs = {'method': 'statevector', 'device': device}
+        if device == "CPU":
+            # Apply CPU-specific optimization to avoid Python gate overhead
+            sim_kwargs['disable_pygate_callback'] = True
+
+        backend = AerSimulator(**sim_kwargs)
         try:
             # Try AerEstimator first (from qiskit_aer.primitives)
             return AerEstimator(backend=backend)
@@ -158,6 +199,8 @@ g_proj_fn = None
 g_template = None
 g_params = None
 g_weight_idxs = None
+g_Xtr = None
+g_ytr = None
 EPS = 1e-10
 
 # shared objects for Windows threads
@@ -167,17 +210,25 @@ shared_proj_fn = None
 shared_template = None
 shared_params = None
 shared_weight_idxs = None
+shared_Xtr = None
+shared_ytr = None
 
-def worker_init(qc, t, m, n, r):
+def worker_init(qc, t, m, n, r, Xtr_data, ytr_data):
     """Initialize per-worker estimator, gradient calculator, and projectors"""
-    print(f'init pid={os.getpid()} start')
+    print(f'init {os.getpid()} start')
     
     # Assign GPU to this worker (round-robin by process ID)
     worker_gpu_id = os.getpid() % N_GPUS if N_GPUS > 0 else None
     assign_visible_gpu(worker_gpu_id)
     
-    # Create appropriate Estimator
-    est = create_estimator()
+    # Always wrap the first estimator creation
+    try:
+        est = create_estimator()           # try GPU
+    except Exception as e:
+        print(f'GPU init failed in pid {os.getpid()} → CPU fallback: {e}')
+        os.environ.pop("QISKIT_AER_CUDA", None)
+        est = create_estimator()           # CPU version
+    
     grd = ReverseEstimatorGradient(est)
     
     template = transpile(qc, optimization_level=0, layout_method="trivial")
@@ -193,32 +244,25 @@ def worker_init(qc, t, m, n, r):
         g_est=est, g_grd=grd,
         g_proj_fn=proj_fn,
         g_template=template, g_params=params,
-        g_weight_idxs=weight_idxs
+        g_weight_idxs=weight_idxs,
+        g_Xtr=Xtr_data, g_ytr=ytr_data
     )
-    print(f'init pid={os.getpid()} done; params={len(g_params)} gpu={worker_gpu_id}')
 
-def loss_and_grad(theta, label, x, t, m, n, r, ep, i):
-    """Compute loss and gradient using observable-based approach"""
-    # Get objects from appropriate source (threads vs processes)
-    if os.name == 'nt':  # Windows threads
-        est = shared_est
-        grd = shared_grd
-        proj_fn = shared_proj_fn
-        # Create a thread-local copy of the circuit to prevent race conditions
-        template = shared_template.copy()
-        params = shared_params
-        weight_idxs = shared_weight_idxs
-    else:  # Linux/HPC processes
-        if g_params is None:
-            raise RuntimeError(f"Worker pid={os.getpid()} started without initialisation")
-        est = g_est
-        grd = g_grd
-        proj_fn = g_proj_fn
-        template = g_template
-        params = g_params
-        weight_idxs = g_weight_idxs
-    
-    # Create parameter binding for input and weights
+    backend_device = "N/A"
+    try:
+        # For AerEstimator (V1)
+        if hasattr(est, 'backend') and hasattr(est.backend, 'configuration'):
+             backend_device = est.backend.configuration().device
+        # For StatevectorEstimator (V2)
+        elif hasattr(est, '_backend') and hasattr(est._backend, 'configuration'):
+             backend_device = est._backend.configuration().device
+    except Exception:
+        pass
+
+    print(f'init {os.getpid()} done; params={len(g_params)} backend={backend_device}')
+
+def make_values(theta, x, params):
+    """Helper to create the parameter-to-value mapping for a circuit."""
     param_binding = {}
     
     # Get parameter types (needed for binding)
@@ -253,46 +297,73 @@ def loss_and_grad(theta, label, x, t, m, n, r, ep, i):
             param_binding[param] = 0.0
     
     # Create values list aligned with template parameter order
-    values = [param_binding[p] for p in params]
-    
-    # Get projector for this class label
-    proj = proj_fn(int(label))
-    
-    # Get probability and gradient using mixed API approach
-    # Check if we're using StatevectorEstimator (V2) or others (V1)
-    is_v2_estimator = hasattr(est, '__class__') and 'StatevectorEstimator' in str(est.__class__)
-    
-    if is_v2_estimator:
-        # V2 Estimator with V1 Gradient
-        pub = (template, proj, values)
-        with lap("estimator.adjoint"):
-            est_result = est.run([pub]).result()
-        p_val = est_result[0].data.evs
-        
-        # ReverseEstimatorGradient always uses V1 API
-        with lap("gradient.adjoint"):
-            grd_result = grd.run([template], [proj], [values]).result()
-        d_p = grd_result.gradients[0]
-    else:
-        # V1 Estimator with V1 Gradient
-        with lap("estimator.adjoint"):
-            p_val = est.run([template], [proj], [values]).result().values[0]
-        with lap("gradient.adjoint"):
-            d_p = grd.run([template], [proj], [values]).result().gradients[0]
-        
-        # Optional: run a shot-based baseline on the first sample of the first epoch
-        if ep == 0 and i == 0:
-            with lap("estimator.shots2k"):
-                est.run([template], [proj], [values], shots=2048).result().values[0]
+    return [param_binding[p] for p in params]
 
-    # Compute negative log-likelihood loss and gradient
-    loss = -np.log(p_val + EPS)
-    grad = -d_p / (p_val + EPS)
-    
-    # Keep grads for model + address params only (slice to match theta shape)
-    grad = grad[weight_idxs]
-    
-    return loss, grad
+def loss_and_grad_batch(theta, idx_group, ep):
+    """Return (mean‑loss, mean‑grad) for a group of samples."""
+    # Determine the context (thread or process) and get the right globals
+    if os.name == 'nt':
+        est = shared_est
+        grd = shared_grd
+        proj_fn = shared_proj_fn
+        template_base = shared_template
+        params = shared_params
+        weight_idxs = shared_weight_idxs
+        Xtr_data = shared_Xtr
+        ytr_data = shared_ytr
+        is_v2_estimator = hasattr(est, '__class__') and 'StatevectorEstimator' in str(est.__class__)
+    else:
+        est = g_est
+        grd = g_grd
+        proj_fn = g_proj_fn
+        template_base = g_template
+        params = g_params
+        weight_idxs = g_weight_idxs
+        Xtr_data = g_Xtr
+        ytr_data = g_ytr
+        is_v2_estimator = hasattr(est, '__class__') and 'StatevectorEstimator' in str(est.__class__)
+
+    losses, grads = [], []
+    values_list, proj_list = [], []
+
+    # On Windows, each thread needs its own copy of the circuit
+    template = template_base.copy() if os.name == 'nt' else template_base
+
+    for i in idx_group:
+        x, label = Xtr_data[i], int(ytr_data[i])
+        values_list.append(make_values(theta, x, params))
+        proj_list.append(proj_fn(label))
+
+    # Single Estimator & Grad call for the batch
+    if is_v2_estimator:
+        # Build a list of one pub per sample
+        triples = [(template, proj, vals)
+                   for proj, vals in zip(proj_list, values_list)]
+        with lap("estimator.run"):
+            # V2 returns a list of results, one for each pub.
+            p_vals_result = est.run(triples).result()
+            p_vals = [r.data.evs for r in p_vals_result]
+        
+        # Grad V1/V2 API is IDENTICAL (thankfully)
+        with lap("gradient.run"):
+            # Gradient still uses V1-style call
+            grd_result = grd.run([template] * len(values_list), proj_list, values_list).result()
+            d_ps = grd_result.gradients
+    else: # V1 API
+        with lap("estimator.adjoint"):
+            p_vals_result = est.run([template] * len(values_list), proj_list, values_list).result()
+            p_vals = p_vals_result.values
+        with lap("gradient.run"):
+            grd_result = grd.run([template] * len(values_list), proj_list, values_list).result()
+            d_ps = grd_result.gradients
+
+    for p_val, d_p in zip(p_vals, d_ps):
+        loss  = -np.log(p_val + EPS)
+        grad  = -d_p[weight_idxs] / (p_val + EPS)
+        losses.append(loss)
+        grads.append(grad)
+
+    return np.mean(losses), np.mean(grads, axis=0)
 
 # wrapper for evaluate_model (simplified since we now work with probabilities)
 def make_wrapper(qc, t, m, n, r):
@@ -426,7 +497,7 @@ def main():
     print("Pre-imported qiskit libraries")
     
     # Use threads on Windows, processes on Linux/HPC for best compatibility
-    global shared_est, shared_grd, shared_proj_fn, shared_template, shared_params, shared_weight_idxs
+    global shared_est, shared_grd, shared_proj_fn, shared_template, shared_params, shared_weight_idxs, shared_Xtr, shared_ytr
     
     if os.name == 'nt':  # Windows
         print("Using thread-based parallelism for Windows compatibility...")
@@ -447,36 +518,35 @@ def main():
         model_params = [p for p in shared_params if p.name.startswith('model')]
         address_params = [p for p in shared_params if p.name.startswith('address_theta')]
         shared_weight_idxs = [shared_params.index(p) for p in (model_params + address_params)]
+        
+        # Share training data for thread access
+        shared_Xtr = Xtr
+        shared_ytr = ytr
 
         print(f"Shared template ready with {len(shared_params)} parameters")
     else:  # Linux/HPC
         print("Using process-based parallelism for HPC performance...")
         backend_type = "processes"
-        try:
-            pool = Parallel(
-                n_jobs=outer,
-                initializer=worker_init,
-                initargs=(qc, t, m, n, r),
-                timeout=3600,
-                prefer="processes",
-                reuse=True
-            )
-        except TypeError:
-            pool = Parallel(
-                n_jobs=outer,
-                initializer=worker_init,
-                initargs=(qc, t, m, n, r),
-                timeout=3600,
-                prefer="processes",
-            )
+        pool = Parallel(
+            n_jobs=outer,
+            initializer=worker_init,
+            initargs=(qc, t, m, n, r, Xtr, ytr),
+            timeout=3600,
+            backend="multiprocessing",
+            prefer="processes"
+        )
     print("Parallelism ready, starting training...")
     
-    for ep in tqdm(range(ARGS.epochs), desc='Epoch'):
-        # Compute loss and gradients for each sample
-        results = pool(
-            delayed(loss_and_grad)(theta, ytr[i], Xtr[i], t, m, n, r, ep, i) 
-            for i in range(len(Xtr))
-        )
+    for ep in tqdm(range(ARGS.epochs),desc='Epoch'):
+        # Batch data into groups for parallel processing
+        groups = [list(range(i, min(i + BATCH, len(Xtr))))
+                  for i in range(0, len(Xtr), BATCH)]
+        lap.reset()
+        results = pool(delayed(loss_and_grad_batch)(theta, grp, ep)
+                       for grp in groups)
+        
+        # Aggregate gradients and losses from all batches
+        total_loss = np.mean([r[0] for r in results if r is not None])
         
         # Extract losses and gradients
         sample_losses = [result[0] for result in results]
@@ -496,15 +566,9 @@ def main():
         avg_loss = np.mean(sample_losses)
         losses.append(avg_loss)
 
-        # Report benchmark results at the end of the epoch
-        def summarize(label):
-            arr = np.array(bench.pop(label, []))
-            return f"{1e3*np.mean(arr):.1f}ms" if len(arr) > 0 else "–"
-        
-        print(f"Epoch {ep+1}: Loss {avg_loss:.4f} | "
-              f"Fwd {summarize('estimator.adjoint')} | "
-              f"Grad {summarize('gradient.adjoint')} | "
-              f"Shots {summarize('estimator.shots2k')}")
+        # Print summary
+        summary = lap.summary_str()
+        tqdm.write(f"Epoch {ep+1}: Loss {avg_loss:.4f} | {summary}")
 
     evaluate_model(make_wrapper(qc, t, m, n, r), theta, Xte, Yte, 'binary', 'Final')
 

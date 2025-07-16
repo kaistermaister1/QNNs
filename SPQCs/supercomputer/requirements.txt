@@ -1,0 +1,8 @@
+numpy
+matplotlib
+tqdm
+joblib
+scikit-learn
+qiskit==1.4.2
+qiskit-aer
+qiskit-algorithms
