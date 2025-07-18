@@ -134,6 +134,8 @@ parser.add_argument("--small-fast", action="store_true",
     help="Force old small-qubit training path (per-sample Estimator calls, light transpile).")
 parser.add_argument("--force-batched", action="store_true",
     help="Force batched training approach even for small circuits.")
+parser.add_argument("--visualize-boundary", action="store_true",
+    help="Generate and save decision boundary plots after training.")
 ARGS = parser.parse_args()
 BATCH = 1  # Batch size for processing samples
 
@@ -155,6 +157,72 @@ def assign_visible_gpu(worker_gpu_id=None):
         os.environ.setdefault("QISKIT_AER_CUDA","1")
 
 # Build projection operators for observables
+def make_binary_projectors(t, m, k):               # k = n*r
+    """Create binary projection operators for outside (0-3) vs inside (4-7) classification"""
+    N = t + m + k + 1
+    p0 = SparsePauliOp("Z", coeffs=[0.5]) + SparsePauliOp("I", coeffs=[0.5])
+    p1 = SparsePauliOp("I", coeffs=[0.5]) - SparsePauliOp("Z", coeffs=[0.5])
+
+    def create_address_projector(address_states):
+        """Create a projector that sums over multiple address states"""
+        projectors = []
+        
+        for addr_state in address_states:
+            proj_list = [None] * N
+            
+            # Ancillas (if any) are projected to |0>
+            for i in range(t):
+                proj_list[i] = p0
+                
+            # Address qubits are projected based on addr_state
+            for i in range(m):
+                q_idx = t + i
+                if ((addr_state >> i) & 1) == 0:
+                    proj_list[q_idx] = p0
+                else:
+                    proj_list[q_idx] = p1
+                    
+            # Data qubits are projected to |0>
+            for i in range(k):
+                q_idx = t + m + i
+                proj_list[q_idx] = p0
+                
+            # Trash qubit is projected to |0>
+            proj_list[t+m+k] = p0
+            
+            # Tensor product all projectors (Qiskit is little-endian)
+            rev_proj_list = proj_list[::-1]
+            
+            full_projector = rev_proj_list[0]
+            for i in range(1, N):
+                full_projector = full_projector.tensor(rev_proj_list[i])
+            
+            projectors.append(full_projector.simplify())
+        
+        # Sum all projectors for this class
+        if len(projectors) == 1:
+            return projectors[0]
+        
+        result = projectors[0]
+        for proj in projectors[1:]:
+            result = result + proj
+        
+        return result.simplify()
+
+    # For m=3, we have 8 address states (0-7)
+    # Outside (class 0): sum over address states 0-3  
+    # Inside (class 1): sum over address states 4-7
+    num_addr_states = 2**m
+    half = num_addr_states // 2
+    
+    outside_states = list(range(0, half))      # [0, 1, 2, 3]
+    inside_states = list(range(half, num_addr_states))   # [4, 5, 6, 7]
+    
+    outside_proj = create_address_projector(outside_states)
+    inside_proj = create_address_projector(inside_states)
+    
+    return [outside_proj, inside_proj]  # Return list where index matches binary label
+
 def make_projectors(t, m, k):               # k = n*r
     """Create projection operators for measuring address qubit probabilities"""
     N = t + m + k + 1
@@ -254,15 +322,16 @@ EPS = 1e-10
 # shared objects for Windows threads
 shared_est = None
 shared_grd = None
-shared_proj_fn = None
+shared_binary_proj_cache = None
 shared_template = None
 shared_params = None
 shared_weight_idxs = None
 shared_Xtr = None
 shared_ytr = None
+shared_input_matrix = None
 
-def worker_init(qc_template, t, m, n, r, Xtr_data, ytr_data, input_matrix, weight_idxs, proj_cache):
-    """Initialize per-worker estimator, gradient calculator, and projectors"""
+def worker_init(qc_template, t, m, n, r, Xtr_data, ytr_data, input_matrix, weight_idxs, binary_proj_cache):
+    """Initialize per-worker estimator, gradient calculator, and binary projectors"""
     worker_gpu_id = os.getpid() % N_GPUS if N_GPUS > 0 else None
     assign_visible_gpu(worker_gpu_id)
     
@@ -281,17 +350,17 @@ def worker_init(qc_template, t, m, n, r, Xtr_data, ytr_data, input_matrix, weigh
         g_params=list(qc_template.parameters),
         g_weight_idxs=weight_idxs,
         g_Xtr=Xtr_data, g_ytr=ytr_data,
-        g_proj_cache=proj_cache,
+        g_binary_proj_cache=binary_proj_cache,
         g_input_matrix=input_matrix,
     )
 
 def loss_and_grad_batch(theta, idx_group, ep):
-    """Return (mean‑loss, mean‑grad) for a group of samples."""
+    """Return (mean‑loss, mean‑grad) for a group of samples using binary cross-entropy."""
     if os.name == 'nt':
         est = shared_est
         grd = shared_grd
         input_matrix = shared_input_matrix
-        proj_cache = shared_proj_cache
+        binary_proj_cache = shared_binary_proj_cache
         template = shared_template.copy()
         weight_idxs = shared_weight_idxs
         ytr_data = shared_ytr
@@ -299,36 +368,80 @@ def loss_and_grad_batch(theta, idx_group, ep):
         est = g_est
         grd = g_grd
         input_matrix = g_input_matrix
-        proj_cache = g_proj_cache
+        binary_proj_cache = g_binary_proj_cache
         template = g_template
         weight_idxs = g_weight_idxs
         ytr_data = g_ytr
 
+    # For each sample, we need to compute both p_out and p_in
     vals_mat = input_matrix[idx_group].copy()
     vals_mat[:, weight_idxs] = theta
     vals_list = vals_mat.tolist()
-    projs_batch = [proj_cache[int(ytr_data[i])] for i in idx_group]
+    
+    # Create estimator inputs for both projectors (outside and inside) for each sample
+    est_circuits = []
+    est_observables = []
+    est_parameters = []
+    
+    for i, sample_idx in enumerate(idx_group):
+        # Add both outside and inside projections for this sample
+        est_circuits.extend([template, template])
+        est_observables.extend([binary_proj_cache[0], binary_proj_cache[1]])  # [outside_proj, inside_proj]
+        est_parameters.extend([vals_list[i], vals_list[i]])
 
     if _is_v2_estimator(est):
-        triples = [(template, proj, vals) for proj, vals in zip(projs_batch, vals_list)]
+        triples = [(circ, obs, vals) for circ, obs, vals in zip(est_circuits, est_observables, est_parameters)]
         with lap("estimator.run"):
             est_res = est.run(triples).result()
         with lap("gradient.run"):
-            # ReverseEstimatorGradient always expects list-based arguments
-            grd_res = grd.run([template] * len(vals_list), projs_batch, vals_list).result()
+            grd_res = grd.run(est_circuits, est_observables, est_parameters).result()
     else: # V1 API
         with lap("estimator.adjoint"):
-            est_res = est.run([template] * len(vals_list), projs_batch, vals_list).result()
+            est_res = est.run(est_circuits, est_observables, est_parameters).result()
         with lap("gradient.run"):
-            grd_res = grd.run([template] * len(vals_list), projs_batch, vals_list).result()
+            grd_res = grd.run(est_circuits, est_observables, est_parameters).result()
     
-    p_vals = np.clip(_estimator_values(est, est_res), EPS, 1.0)
-    d_ps = _gradient_arrays(grd_res)
+    all_vals = _estimator_values(est, est_res)
+    all_grads = _gradient_arrays(grd_res)
     
-    losses_epoch = -np.log(p_vals)
-    grads_epoch = np.asarray([-dp[weight_idxs] / pv for dp, pv in zip(d_ps, p_vals)])
+    # Reshape results: we have 2 values per sample (p_out, p_in)
+    p_outs = all_vals[::2]  # Every other value starting from 0
+    p_ins = all_vals[1::2]  # Every other value starting from 1
+    grad_outs = all_grads[::2]  # Gradients for p_out
+    grad_ins = all_grads[1::2]   # Gradients for p_in
     
-    return np.mean(losses_epoch), np.mean(grads_epoch, axis=0)
+    # Ensure probabilities are valid and normalized
+    p_outs = np.clip(p_outs, EPS, 1.0 - EPS)
+    p_ins = np.clip(p_ins, EPS, 1.0 - EPS)
+    
+    # Normalize so p_out + p_in = 1 (they should sum to 1 by construction, but numerical errors)
+    total_probs = p_outs + p_ins
+    p_outs = p_outs / total_probs
+    p_ins = p_ins / total_probs
+    
+    # Compute binary cross-entropy loss and gradients
+    losses = []
+    grads = []
+    
+    for i, sample_idx in enumerate(idx_group):
+        y = int(ytr_data[sample_idx])  # Binary label (0 or 1)
+        p_out, p_in = p_outs[i], p_ins[i]
+        grad_out, grad_in = grad_outs[i], grad_ins[i]
+        
+        # Binary cross-entropy: -[y*log(p_in) + (1-y)*log(p_out)]
+        if y == 1:  # Inside class
+            loss = -np.log(p_in + EPS)
+            # Gradient of loss w.r.t. weights: -grad_in/p_in
+            grad = -grad_in[weight_idxs] / (p_in + EPS)
+        else:  # Outside class  
+            loss = -np.log(p_out + EPS)
+            # Gradient of loss w.r.t. weights: -grad_out/p_out
+            grad = -grad_out[weight_idxs] / (p_out + EPS)
+            
+        losses.append(loss)
+        grads.append(grad)
+    
+    return np.mean(losses), np.mean(grads, axis=0)
 
 # wrapper for evaluate_model (simplified since we now work with probabilities)
 def make_wrapper(qc, t, m, n, r):
@@ -428,8 +541,8 @@ def small_worker_init(qc, t, m, n, r, Xtr_data, ytr_data):
     
     grd = ReverseEstimatorGradient(est)
     
-    # This is the key difference: create the projector function
-    proj_fn = make_projectors(t, m, n*r)
+    # Create binary projectors instead of individual state projectors
+    binary_proj_cache = make_binary_projectors(t, m, n*r)
     
     params = list(qc.parameters)
     model_idx    = [i for i,p in enumerate(params) if p.name.startswith("model")]
@@ -438,7 +551,7 @@ def small_worker_init(qc, t, m, n, r, Xtr_data, ytr_data):
 
     globals().update(
         g_est=est, g_grd=grd,
-        g_proj_fn=proj_fn, # Use the function, not a cache
+        g_binary_proj_cache=binary_proj_cache,
         g_template=qc,
         g_params=params,
         g_weight_idxs=weight_idxs,
@@ -449,7 +562,7 @@ def small_worker_init(qc, t, m, n, r, Xtr_data, ytr_data):
 def small_loss_and_grad_batch(theta, idx_group, ep):
     # Small-fast path uses g_* globals (set by worker_init or main process)
     est, grd = g_est, g_grd
-    proj_fn, template_base, params = g_proj_fn, g_template, g_params
+    binary_proj_cache, template_base, params = g_binary_proj_cache, g_template, g_params
     weight_idxs, Xtr_data, ytr_data = g_weight_idxs, g_Xtr, g_ytr
     
     # Safety check for uninitialized globals
@@ -458,40 +571,78 @@ def small_loss_and_grad_batch(theta, idx_group, ep):
     
     is_v2 = hasattr(est, '__class__') and 'StatevectorEstimator' in str(est.__class__)
     template = template_base
-    values_list = []
-    proj_list = []
+    
+    # For each sample, we need to compute both p_out and p_in
+    est_circuits = []
+    est_observables = []
+    est_parameters = []
+    
     for i in idx_group:
         x, label = Xtr_data[i], int(ytr_data[i])
-        values_list.append(small_make_values(theta, x, params))
-        proj_list.append(proj_fn(label))
+        values = small_make_values(theta, x, params)
+        
+        # Add both outside and inside projections for this sample
+        est_circuits.extend([template, template])
+        est_observables.extend([binary_proj_cache[0], binary_proj_cache[1]])  # [outside_proj, inside_proj]
+        est_parameters.extend([values, values])
 
     if is_v2:
-        triples = [(template, proj, vals) for proj, vals in zip(proj_list, values_list)]
+        triples = [(circ, obs, vals) for circ, obs, vals in zip(est_circuits, est_observables, est_parameters)]
         with lap("estimator.run"):
             p_vals_result = est.run(triples).result()
-            p_vals = [r.data.evs for r in p_vals_result]
+            all_vals = [r.data.evs for r in p_vals_result]
         with lap("gradient.run"):
-            grd_result = grd.run([template]*len(values_list), proj_list, values_list).result()
-            d_ps = grd_result.gradients
+            grd_result = grd.run(est_circuits, est_observables, est_parameters).result()
+            all_grads = grd_result.gradients
     else:
         with lap("estimator.adjoint"):
-            p_vals_result = est.run([template]*len(values_list), proj_list, values_list).result()
-            p_vals = p_vals_result.values
+            p_vals_result = est.run(est_circuits, est_observables, est_parameters).result()
+            all_vals = p_vals_result.values
         with lap("gradient.run"):
-            grd_result = grd.run([template]*len(values_list), proj_list, values_list).result()
-            d_ps = grd_result.gradients
+            grd_result = grd.run(est_circuits, est_observables, est_parameters).result()
+            all_grads = grd_result.gradients
 
     # Ensure numeric arrays
-    p_vals = np.asarray(p_vals, dtype=float).ravel()
-    d_ps = [np.asarray(g, dtype=float) for g in d_ps]
+    all_vals = np.asarray(all_vals, dtype=float).ravel()
+    all_grads = [np.asarray(g, dtype=float) for g in all_grads]
 
+    # Reshape results: we have 2 values per sample (p_out, p_in)
+    p_outs = all_vals[::2]  # Every other value starting from 0
+    p_ins = all_vals[1::2]  # Every other value starting from 1
+    grad_outs = all_grads[::2]  # Gradients for p_out
+    grad_ins = all_grads[1::2]   # Gradients for p_in
+    
+    # Ensure probabilities are valid and normalized
+    p_outs = np.clip(p_outs, EPS, 1.0 - EPS)
+    p_ins = np.clip(p_ins, EPS, 1.0 - EPS)
+    
+    # Normalize so p_out + p_in = 1
+    total_probs = p_outs + p_ins
+    p_outs = p_outs / total_probs
+    p_ins = p_ins / total_probs
+
+    # Compute binary cross-entropy loss and gradients
     losses = []
     grads = []
-    for p_val, d_p in zip(p_vals, d_ps):
-        loss = -np.log(p_val + EPS)
-        grad = -d_p[weight_idxs] / (p_val + EPS)
+    
+    for i, sample_idx in enumerate(idx_group):
+        y = int(ytr_data[sample_idx])  # Binary label (0 or 1)
+        p_out, p_in = p_outs[i], p_ins[i]
+        grad_out, grad_in = grad_outs[i], grad_ins[i]
+        
+        # Binary cross-entropy: -[y*log(p_in) + (1-y)*log(p_out)]
+        if y == 1:  # Inside class
+            loss = -np.log(p_in + EPS)
+            # Gradient of loss w.r.t. weights: -grad_in/p_in
+            grad = -grad_in[weight_idxs] / (p_in + EPS)
+        else:  # Outside class  
+            loss = -np.log(p_out + EPS)
+            # Gradient of loss w.r.t. weights: -grad_out/p_out
+            grad = -grad_out[weight_idxs] / (p_out + EPS)
+            
         losses.append(loss)
         grads.append(grad)
+        
     return np.mean(losses), np.mean(grads, axis=0)
 
 # Note: compute_loss_sampled removed since training loop now directly 
@@ -540,6 +691,7 @@ def main():
     # print("Transpilation complete.")
 
     theta = create_random_weights(frame, seed=42)
+    initial_theta_snapshot = theta.copy()
     
     # Temporary placeholder; real parameter mapping will happen after transpilation
     classes = 2**m
@@ -587,8 +739,8 @@ def main():
                 if col_j < len(x):
                     full_input_matrix[row, p_idx] = x[col_j]
 
-        proj_fn = make_projectors(t, m, n*r)
-        proj_cache = [proj_fn(i) for i in range(classes)]
+        # Create binary projectors for outside (0-3) vs inside (4-7) classification
+        binary_proj_cache = make_binary_projectors(t, m, n*r)
 
     m1, v1 = np.zeros_like(theta), np.zeros_like(theta)
     b1, b2, lr = 0.9, 0.999, ARGS.lr
@@ -658,33 +810,76 @@ def main():
                     batch_idx = perm[i:i+BATCH]
                     if len(batch_idx) == 0: continue
 
+                    # For each sample, we need to compute both p_out and p_in
                     vals_mat = full_input_matrix[batch_idx].copy()
                     vals_mat[:, weight_idxs] = theta
                     vals_list = vals_mat.tolist()
-                    projs_batch = [proj_cache[int(ytr[i])] for i in batch_idx]
+                    
+                    # Create estimator inputs for both projectors (outside and inside) for each sample
+                    est_circuits = []
+                    est_observables = []
+                    est_parameters = []
+                    
+                    for j, sample_idx in enumerate(batch_idx):
+                        # Add both outside and inside projections for this sample
+                        est_circuits.extend([template, template])
+                        est_observables.extend([binary_proj_cache[0], binary_proj_cache[1]])  # [outside_proj, inside_proj]
+                        est_parameters.extend([vals_list[j], vals_list[j]])
 
                     if _is_v2_estimator(est):
-                        triples = [(template, proj, vals) for proj, vals in zip(projs_batch, vals_list)]
+                        triples = [(circ, obs, vals) for circ, obs, vals in zip(est_circuits, est_observables, est_parameters)]
                         with lap("estimator.run"):
                             est_res = est.run(triples).result()
                         with lap("gradient.run"):
-                            # ReverseEstimatorGradient always expects list-based arguments
-                            grd_res = grd.run([template] * len(vals_list), projs_batch, vals_list).result()
+                            grd_res = grd.run(est_circuits, est_observables, est_parameters).result()
                     else: # V1 API
                         with lap("estimator.adjoint"):
-                            est_res = est.run([template] * len(vals_list), projs_batch, vals_list).result()
+                            est_res = est.run(est_circuits, est_observables, est_parameters).result()
                         with lap("gradient.run"):
-                            grd_res = grd.run([template] * len(vals_list), projs_batch, vals_list).result()
+                            grd_res = grd.run(est_circuits, est_observables, est_parameters).result()
 
-                    p_vals = _estimator_values(est, est_res)
-                    d_ps = _gradient_arrays(grd_res)
+                    all_vals = _estimator_values(est, est_res)
+                    all_grads = _gradient_arrays(grd_res)
                     
-                    p_vals = np.clip(p_vals, EPS, 1.0)
-                    losses_epoch = -np.log(p_vals)
-                    epoch_loss_acc.extend(losses_epoch)
+                    # Reshape results: we have 2 values per sample (p_out, p_in)
+                    p_outs = all_vals[::2]  # Every other value starting from 0
+                    p_ins = all_vals[1::2]  # Every other value starting from 1
+                    grad_outs = all_grads[::2]  # Gradients for p_out
+                    grad_ins = all_grads[1::2]   # Gradients for p_in
                     
-                    grads_epoch = np.asarray([-dp[weight_idxs] / pv for dp, pv in zip(d_ps, p_vals)])
-                    g = grads_epoch.mean(axis=0)
+                    # Ensure probabilities are valid and normalized
+                    p_outs = np.clip(p_outs, EPS, 1.0 - EPS)
+                    p_ins = np.clip(p_ins, EPS, 1.0 - EPS)
+                    
+                    # Normalize so p_out + p_in = 1
+                    total_probs = p_outs + p_ins
+                    p_outs = p_outs / total_probs
+                    p_ins = p_ins / total_probs
+                    
+                    # Compute binary cross-entropy loss and gradients
+                    batch_losses = []
+                    batch_grads = []
+                    
+                    for j, sample_idx in enumerate(batch_idx):
+                        y = int(ytr[sample_idx])  # Binary label (0 or 1)
+                        p_out, p_in = p_outs[j], p_ins[j]
+                        grad_out, grad_in = grad_outs[j], grad_ins[j]
+                        
+                        # Binary cross-entropy: -[y*log(p_in) + (1-y)*log(p_out)]
+                        if y == 1:  # Inside class
+                            loss = -np.log(p_in + EPS)
+                            # Gradient of loss w.r.t. weights: -grad_in/p_in
+                            grad = -grad_in[weight_idxs] / (p_in + EPS)
+                        else:  # Outside class  
+                            loss = -np.log(p_out + EPS)
+                            # Gradient of loss w.r.t. weights: -grad_out/p_out
+                            grad = -grad_out[weight_idxs] / (p_out + EPS)
+                            
+                        batch_losses.append(loss)
+                        batch_grads.append(grad)
+                    
+                    epoch_loss_acc.extend(batch_losses)
+                    g = np.mean(batch_grads, axis=0)
 
                     step += 1
                     # Adam update
@@ -712,7 +907,7 @@ def main():
 
             if os.name == 'nt':  # Windows
                 print("Windows detected: Using thread-based parallelism for stability")
-                global shared_est, shared_grd, shared_template, shared_params, shared_weight_idxs, shared_Xtr, shared_ytr, shared_input_matrix, shared_proj_cache
+                global shared_est, shared_grd, shared_template, shared_params, shared_weight_idxs, shared_Xtr, shared_ytr, shared_input_matrix, shared_binary_proj_cache
                 
                 print("Using thread-based parallelism for Windows compatibility...")
                 pool = Parallel(n_jobs=outer, prefer="threads")
@@ -731,7 +926,7 @@ def main():
                 shared_Xtr = Xtr
                 shared_ytr = ytr
                 shared_input_matrix = full_input_matrix
-                shared_proj_cache = proj_cache
+                shared_binary_proj_cache = binary_proj_cache
 
                 print(f"Shared template ready with {len(shared_params)} parameters")
             
@@ -740,7 +935,7 @@ def main():
                 pool = Parallel(
                     n_jobs=outer,
                     initializer=worker_init,
-                    initargs=(template, t, m, n, r, Xtr, ytr, full_input_matrix, weight_idxs, proj_cache),
+                    initargs=(template, t, m, n, r, Xtr, ytr, full_input_matrix, weight_idxs, binary_proj_cache),
                     timeout=3600,
                     backend="multiprocessing",
                     prefer="processes"
@@ -777,6 +972,16 @@ def main():
 
     evaluate_model(make_wrapper(template, t, m, n, r), theta, Xte, Yte_onehot, 'binary', 'Final')
 
+    # Save initial and final weights to a single compressed file
+    os.makedirs('weights', exist_ok=True)
+    np.savez('weights/model_weights.npz', initial=initial_theta_snapshot, final=theta)
+    print("Initial and final weights saved to 'weights/model_weights.npz'.")
+
+    # Draw and save decision boundaries if requested
+    if ARGS.visualize_boundary:
+        from star_boundary import plot_boundaries
+        plot_boundaries(template, initial_theta_snapshot, theta, Xtr, ytr, t, m, n, r)
+
     # Save loss plot
     os.makedirs('plots', exist_ok=True)
     plt.figure(figsize=(10, 6))
@@ -784,7 +989,7 @@ def main():
     plt.yscale('log')
     plt.xlabel('Epoch')
     plt.ylabel('Negative Log-Likelihood Loss (log scale)')
-    plt.title('Training Loss Over Time (Observable-based)')
+    plt.title('Training Loss Over Time (Binary Cross-Entropy)')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig('plots/loss_observable.png', dpi=300)
