@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -96,72 +97,82 @@ def evaluate_model(spqc_model, θ, test_features, test_labels_onehot, mode, titl
     print("="*50)
     return accuracy
 
-def visualize_decision_boundary(spqc_model, θ, m, test_features, test_labels_onehot, mode, boundary=None, title="Decision Boundary"):
-    """Visualizes the learned decision boundaries for the given classification mode."""
+def visualize_decision_boundary(spqc_model, θ, m, test_features, test_labels_onehot, mode, 
+                                boundary=None, title="Decision Boundary", resolution=100, save_path=None):
+    """
+    Visualizes the learned decision boundaries for the given classification mode and saves the plot.
+    """
     print("\n" + "="*50)
-    print(title)
+    print(f"Generating plot: '{title}'")
     print("="*50)
 
     x_min, x_max = 0, 1
     y_min, y_max = 0, 1
-    xx, yy = np.meshgrid(np.linspace(x_min, x_max, 100), np.linspace(y_min, y_max, 100))
+    xx, yy = np.meshgrid(np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution))
     mesh_points = np.column_stack([xx.ravel(), yy.ravel()])
 
     # Get predictions for mesh grid
     mesh_predictions = []
-    for point in tqdm(mesh_points, desc="Mesh Grid Predictions"):
+    for point in tqdm(mesh_points, desc=f"Mesh Grid Predictions for '{title}'"):
         amplitudes = spqc_model.forward(point, θ)
         probs = np.abs(amplitudes)**2
         mesh_predictions.append(probs)
     mesh_predictions = np.array(mesh_predictions)
 
-    plt.figure(figsize=(12, 10))
-    ax = plt.gca()
+    fig, ax = plt.subplots(figsize=(10, 8))
     
     true_labels = np.argmax(test_labels_onehot, axis=1)
 
     if mode == 'wedge':
-        # Plot learned decision regions
+        # This part remains unchanged
         Z = np.argmax(mesh_predictions, axis=1).reshape(xx.shape)
         cmap = plt.get_cmap('viridis', 2**m)
-        plt.contourf(xx, yy, Z, cmap=cmap, alpha=0.6, levels=np.arange(-0.5, 2**m, 1))
-        plt.colorbar(ticks=range(2**m), label='Predicted Wedge Class')
-
-        # Plot true wedge boundaries
+        mappable = ax.contourf(xx, yy, Z, cmap=cmap, alpha=0.6, levels=np.arange(-0.5, 2**m, 1))
+        fig.colorbar(mappable, ax=ax, ticks=range(2**m), label='Predicted Wedge Class')
         angles = np.linspace(0, 2 * np.pi, 2**m + 1)
         for angle in angles:
             ax.plot([0.5, 0.5 + 0.7 * np.cos(angle)], [0.5, 0.5 + 0.7 * np.sin(angle)], 'k:', linewidth=2)
-        
-        # Plot test data
-        plt.scatter(test_features[:, 0], test_features[:, 1], c=true_labels, cmap=cmap, edgecolors='k', s=50)
+        ax.scatter(test_features[:, 0], test_features[:, 1], c=true_labels, cmap=cmap, edgecolors='k', s=50, label="Test Data")
 
     elif mode == 'binary':
-        # Only consider first 2 amplitudes for binary classification
         binary_probs = mesh_predictions[:, :2]
-        # Normalize to get relative probabilities between the two classes
         binary_probs_normalized = binary_probs / (binary_probs.sum(axis=1, keepdims=True) + 1e-8)
         Z = binary_probs_normalized[:, 1].reshape(xx.shape)  # Probability of class 1 (outside star)
         
-        contourf = plt.contourf(xx, yy, Z, levels=20, cmap='RdYlBu_r', alpha=0.8)
-        plt.colorbar(contourf, label='P(Outside Star | First 2 Classes)')
+        # Use the Red-Yellow-Blue (reversed) colormap to match the user's image
+        mappable = ax.contourf(xx, yy, Z, levels=20, cmap='RdYlBu_r', alpha=0.8, vmin=0, vmax=1)
         
-        # Plot learned p=0.5 decision boundary
-        plt.contour(xx, yy, Z, levels=[0.5], colors='green', linewidths=2.5)
+        # Draw the learned boundary as a solid, bright green line for high visibility
+        ax.contour(xx, yy, Z, levels=[0.5], colors='lime', linewidths=3, linestyles='-')
         
-        # Plot true star boundary
+        # Draw the target boundary as a solid black line
         if boundary:
             vertices = boundary.vertices
-            plt.plot(vertices[:, 0], vertices[:, 1], 'k:', linewidth=3)
+            ax.plot(vertices[:, 0], vertices[:, 1], 'k-', linewidth=3, label='True Boundary')
         
-        # Plot test data
         inside = test_features[true_labels == 0]
         outside = test_features[true_labels == 1]
-        plt.scatter(inside[:, 0], inside[:, 1], c='red', s=40, alpha=0.7, marker='s')
-        plt.scatter(outside[:, 0], outside[:, 1], c='blue', s=40, alpha=0.7, marker='s')
+        ax.scatter(inside[:, 0], inside[:, 1], c='red', s=40, alpha=0.9, marker='o', edgecolors='white', linewidth=1, label='Inside (True)')
+        ax.scatter(outside[:, 0], outside[:, 1], c='blue', s=40, alpha=0.9, marker='o', edgecolors='white', linewidth=1, label='Outside (True)')
 
-    plt.xlim(0, 1); plt.ylim(0, 1); plt.grid(True, alpha=0.2)
-    plt.title(title); plt.xlabel('X coordinate'); plt.ylabel('Y coordinate')
-    ax.set_aspect('equal', adjustable='box'); plt.tight_layout(); plt.show()
+        cbar = fig.colorbar(mappable, ax=ax)
+        cbar.set_label('Probability of "Outside" Class', rotation=270, labelpad=15)
+
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.grid(True, alpha=0.2)
+    ax.set_title(title); ax.set_xlabel('X coordinate'); ax.set_ylabel('Y coordinate')
+    ax.set_aspect('equal', adjustable='box')
+    ax.legend(loc='upper right')
+    fig.tight_layout()
+    
+    if save_path:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300)
+        print(f"Plot successfully saved to '{save_path}'")
+    else:
+        plt.show()
+    
+    plt.close(fig) # Free up memory
 
     # Calculate accuracy on the mesh grid
     true_mesh_labels_onehot = wedge_onehot(mesh_points, 2**m) if mode == 'wedge' else None
@@ -174,10 +185,8 @@ def visualize_decision_boundary(spqc_model, θ, m, test_features, test_labels_on
         
     if true_mesh_labels is not None:
         if mode == 'binary':
-            # Only consider first 2 amplitudes for binary classification
             pred_mesh_labels = np.argmax(mesh_predictions[:, :2], axis=1)
         else:
-            # Use all amplitudes for wedge classification
             pred_mesh_labels = np.argmax(mesh_predictions, axis=1)
         mesh_accuracy = np.mean(pred_mesh_labels == true_mesh_labels)
         print(f"\nAccuracy on mesh grid: {mesh_accuracy:.4f} ({mesh_accuracy*100:.2f}%)")

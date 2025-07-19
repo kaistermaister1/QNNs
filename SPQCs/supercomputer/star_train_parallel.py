@@ -40,7 +40,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(ROOT))
 from star_data import get_star_data
 from star_spqc import create_spqc_circuit, create_random_weights
-from star_eval import evaluate_model
+from star_eval import evaluate_model, visualize_decision_boundary
 
 # ───────── Benchmarking Harness ─────────
 bench = defaultdict(list)  # label → [times]
@@ -136,6 +136,8 @@ parser.add_argument("--force-batched", action="store_true",
     help="Force batched training approach even for small circuits.")
 parser.add_argument("--visualize-boundary", action="store_true",
     help="Generate and save decision boundary plots after training.")
+parser.add_argument("--boundary-resolution", type=int, default=64,
+    help="Grid resolution for boundary visualization (default: 64)")
 ARGS = parser.parse_args()
 BATCH = 1  # Batch size for processing samples
 
@@ -672,7 +674,7 @@ def main():
                 print("Try running: pip uninstall qiskit-aer -y && pip install qiskit-aer-gpu\n")
             USE_GPU = False
 
-    Xtr, Xte, ytr, yte, _ = get_star_data(300)
+    Xtr, Xte, ytr, yte, star_path = get_star_data(300)
     np.random.seed(42)
 
     t, m, n, r = 0, 3, 2, 1
@@ -977,10 +979,37 @@ def main():
     np.savez('weights/model_weights.npz', initial=initial_theta_snapshot, final=theta)
     print("Initial and final weights saved to 'weights/model_weights.npz'.")
 
-    # Draw and save decision boundaries if requested
+    # ───────── Visualize Decision Boundary ─────────
     if ARGS.visualize_boundary:
-        from star_boundary import plot_boundaries
-        plot_boundaries(template, initial_theta_snapshot, theta, Xtr, ytr, t, m, n, r)
+        print("\n" + "="*50)
+        print("Visualizing Decision Boundaries...")
+        print("="*50)
+        try:
+            # --- Initial Boundary ---
+            print("Visualizing initial boundary...")
+            visualize_decision_boundary(
+                make_wrapper(template, t, m, n, r), initial_theta_snapshot, m, Xtr, Ytr_onehot, 'binary',
+                boundary=star_path,
+                title='Initial Decision Boundary',
+                resolution=ARGS.boundary_resolution,
+                save_path='plots/decision_boundary_initial.png'
+            )
+
+            # --- Final Boundary ---
+            print("Visualizing final boundary...")
+            visualize_decision_boundary(
+                make_wrapper(template, t, m, n, r), theta, m, Xtr, Ytr_onehot, 'binary',
+                boundary=star_path,
+                title='Final Decision Boundary',
+                resolution=ARGS.boundary_resolution,
+                save_path='plots/decision_boundary_final.png'
+            )
+            
+        except ImportError:
+            print("\nWarning: Could not import 'visualize_decision_boundary' from 'star_eval.py'.")
+            print("         Please ensure the file exists and is in the correct path.")
+        except Exception as e:
+            print(f"\nAn error occurred during boundary visualization: {e}")
 
     # Save loss plot
     os.makedirs('plots', exist_ok=True)
