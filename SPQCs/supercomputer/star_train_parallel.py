@@ -1,4 +1,4 @@
-"""star_train_parallel_2.py – Observable-based gradient with ReverseEstimatorGradient
+"""star_train_parallel.py – Observable-based gradient with ReverseEstimatorGradient
 ================================================================================
 This version uses observables and Qiskit's ReverseEstimatorGradient for more 
 efficient gradient computation compared to manual parameter-shift gradients.
@@ -148,6 +148,7 @@ N_CPUS      = ARGS.cpus or SLURM_CPUS
 USE_GPU     = not ARGS.no_gpu
 VISIBLE_GPU = len(os.environ.get("CUDA_VISIBLE_DEVICES", "").split(',')) if os.environ.get("CUDA_VISIBLE_DEVICES") else 0
 N_GPUS      = ARGS.gpus if ARGS.gpus is not None else VISIBLE_GPU
+RSEED       = 42
 for e in ("OMP_NUM_THREADS","MKL_NUM_THREADS","OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(e,"1")
 
@@ -431,11 +432,12 @@ def loss_and_grad_batch(theta, idx_group, ep):
         grad_out, grad_in = grad_outs[i], grad_ins[i]
         
         # Binary cross-entropy: -[y*log(p_in) + (1-y)*log(p_out)]
-        if y == 1:  # Inside class
+        # The dataset encodes "inside" as 0 and "outside" as 1.
+        if y == 0:  # Inside class
             loss = -np.log(p_in + EPS)
             # Gradient of loss w.r.t. weights: -grad_in/p_in
             grad = -grad_in[weight_idxs] / (p_in + EPS)
-        else:  # Outside class  
+        else:  # Outside class (y == 1)
             loss = -np.log(p_out + EPS)
             # Gradient of loss w.r.t. weights: -grad_out/p_out
             grad = -grad_out[weight_idxs] / (p_out + EPS)
@@ -633,11 +635,12 @@ def small_loss_and_grad_batch(theta, idx_group, ep):
         grad_out, grad_in = grad_outs[i], grad_ins[i]
         
         # Binary cross-entropy: -[y*log(p_in) + (1-y)*log(p_out)]
-        if y == 1:  # Inside class
+        # The dataset encodes "inside" as 0 and "outside" as 1.
+        if y == 0:  # Inside class
             loss = -np.log(p_in + EPS)
             # Gradient of loss w.r.t. weights: -grad_in/p_in
             grad = -grad_in[weight_idxs] / (p_in + EPS)
-        else:  # Outside class  
+        else:  # Outside class (y == 1)
             loss = -np.log(p_out + EPS)
             # Gradient of loss w.r.t. weights: -grad_out/p_out
             grad = -grad_out[weight_idxs] / (p_out + EPS)
@@ -675,10 +678,12 @@ def main():
             USE_GPU = False
 
     Xtr, Xte, ytr, yte, star_path = get_star_data(300)
-    np.random.seed(42)
+    np.random.seed(RSEED)
 
     t, m, n, r = 0, 3, 2, 1
+    model_name = f"t{t}_m{m}_n{n}_r{r}"
     num_qubits = t + m + n * r + 1
+    print(f"Model configuration: {model_name} ({num_qubits} qubits)")
     FORCE_SMALL = ARGS.small_fast or (num_qubits <= 12 and not ARGS.force_batched)  # auto for <=12 unless user overrides
 
     frame = create_spqc_circuit(t=t, m=m, n=n, r=r)
@@ -692,7 +697,7 @@ def main():
     # template = transpile(qc, optimization_level=3)
     # print("Transpilation complete.")
 
-    theta = create_random_weights(frame, seed=42)
+    theta = create_random_weights(frame, seed=RSEED)
     initial_theta_snapshot = theta.copy()
     
     # Temporary placeholder; real parameter mapping will happen after transpilation
@@ -747,7 +752,7 @@ def main():
     m1, v1 = np.zeros_like(theta), np.zeros_like(theta)
     b1, b2, lr = 0.9, 0.999, ARGS.lr
     losses: List[float] = []
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(RSEED)
     step = 0  # Adam bias-correction step counter local to main
 
     # ─── SMALL-FAST STRATEGY (per-sample parallelism) ───
@@ -868,11 +873,12 @@ def main():
                         grad_out, grad_in = grad_outs[j], grad_ins[j]
                         
                         # Binary cross-entropy: -[y*log(p_in) + (1-y)*log(p_out)]
-                        if y == 1:  # Inside class
+                        # The dataset encodes "inside" as 0 and "outside" as 1.
+                        if y == 0:  # Inside class
                             loss = -np.log(p_in + EPS)
                             # Gradient of loss w.r.t. weights: -grad_in/p_in
                             grad = -grad_in[weight_idxs] / (p_in + EPS)
-                        else:  # Outside class  
+                        else:  # Outside class (y == 1)
                             loss = -np.log(p_out + EPS)
                             # Gradient of loss w.r.t. weights: -grad_out/p_out
                             grad = -grad_out[weight_idxs] / (p_out + EPS)
@@ -976,8 +982,9 @@ def main():
 
     # Save initial and final weights to a single compressed file
     os.makedirs('weights', exist_ok=True)
-    np.savez('weights/model_weights.npz', initial=initial_theta_snapshot, final=theta)
-    print("Initial and final weights saved to 'weights/model_weights.npz'.")
+    weight_file = f'weights/model_weights_{model_name}.npz'
+    np.savez(weight_file, initial=initial_theta_snapshot, final=theta)
+    print(f"Initial and final weights saved to '{weight_file}'.")
 
     # ───────── Visualize Decision Boundary ─────────
     if ARGS.visualize_boundary:
@@ -990,9 +997,9 @@ def main():
             visualize_decision_boundary(
                 make_wrapper(template, t, m, n, r), initial_theta_snapshot, m, Xtr, Ytr_onehot, 'binary',
                 boundary=star_path,
-                title='Initial Decision Boundary',
+                title=f'Initial Decision Boundary ({model_name})',
                 resolution=ARGS.boundary_resolution,
-                save_path='plots/decision_boundary_initial.png'
+                save_path=f'plots/decision_boundary_initial_{model_name}.png'
             )
 
             # --- Final Boundary ---
@@ -1000,9 +1007,9 @@ def main():
             visualize_decision_boundary(
                 make_wrapper(template, t, m, n, r), theta, m, Xtr, Ytr_onehot, 'binary',
                 boundary=star_path,
-                title='Final Decision Boundary',
+                title=f'Final Decision Boundary ({model_name})',
                 resolution=ARGS.boundary_resolution,
-                save_path='plots/decision_boundary_final.png'
+                save_path=f'plots/decision_boundary_final_{model_name}.png'
             )
             
         except ImportError:
@@ -1018,13 +1025,14 @@ def main():
     plt.yscale('log')
     plt.xlabel('Epoch')
     plt.ylabel('Negative Log-Likelihood Loss (log scale)')
-    plt.title('Training Loss Over Time (Binary Cross-Entropy)')
+    plt.title(f'Training Loss Over Time ({model_name}) - Binary Cross-Entropy')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('plots/loss_observable.png', dpi=300)
+    loss_plot_file = f'plots/loss_observable_{model_name}.png'
+    plt.savefig(loss_plot_file, dpi=300)
     plt.close()
 
-    print(f"Training complete. Loss plot saved to plots/loss_observable.png")
+    print(f"Training complete. Loss plot saved to {loss_plot_file}")
 
 if __name__ == '__main__':
     with suppress(KeyboardInterrupt):
