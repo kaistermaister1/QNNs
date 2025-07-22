@@ -10,7 +10,7 @@ import os
 # --- Configuration ---
 CLASSIFICATION_MODE = 'binary'  # Options: 'wedge' or 'binary'
 VISUALIZE_DATA = False          # Show a plot of the data before evaluation
-TRAIN_MODEL = False              # Set to False to skip training and only see random performance
+TRAIN_MODEL = True              # Set to False to skip training and only see random performance
 RANDOM_SEED = None                # Set as None to use random seed
 
 # --- Data Loading and Preprocessing ---

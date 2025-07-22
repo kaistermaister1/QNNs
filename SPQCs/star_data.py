@@ -24,7 +24,7 @@ def create_star_boundary(center=(0.5, 0.5), outer_radius=0.3, inner_radius=0.15,
     
     return Path(vertices)
 
-def generate_dataset(num_points=100):
+def generate_dataset(num_points=1000):
     """Generate random points with balanced inside/outside distribution."""
     np.random.seed(42)  # For reproducibility
     

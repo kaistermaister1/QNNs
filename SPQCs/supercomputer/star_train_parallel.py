@@ -35,10 +35,12 @@ except ImportError:
 from qiskit_algorithms.gradients import ReverseEstimatorGradient
 from qiskit.quantum_info import SparsePauliOp, Statevector
 
+# ───────── Configuration ─────────
+SHAPE = "star"  # Specify the shape: "star", "triangle", "square", etc.
+
 # ───────── project imports ─────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(ROOT))
-from star_data import get_star_data
 from star_spqc import create_spqc_circuit, create_random_weights
 from star_eval import evaluate_model, visualize_decision_boundary
 
@@ -677,7 +679,10 @@ def main():
                 print("Try running: pip uninstall qiskit-aer -y && pip install qiskit-aer-gpu\n")
             USE_GPU = False
 
-    Xtr, Xte, ytr, yte, star_path = get_star_data(300)
+    # Dynamic import: from {SHAPE}_data import get_{SHAPE}_data
+    data_module = __import__(f"{SHAPE}_data", fromlist=[f"get_{SHAPE}_data"])
+    get_data_func = getattr(data_module, f"get_{SHAPE}_data")
+    Xtr, Xte, ytr, yte, boundary_path = get_data_func(300)
     np.random.seed(RSEED)
 
     t, m, n, r = 0, 3, 2, 1
@@ -788,6 +793,7 @@ def main():
             
             # Adam update on mean gradient for the epoch
             g = np.mean(grads_epoch, axis=0)
+            grad_norm = np.linalg.norm(g)
             step = ep + 1  # Simple and deterministic bias correction
             m1 = b1 * m1 + (1 - b1) * g
             v1 = b2 * v1 + (1 - b2) * (g**2)
@@ -797,7 +803,7 @@ def main():
 
             if ARGS.profile or (ep % max(1, ARGS.epochs // 20) == 0):
                 summary = lap.summary_str()
-                tqdm.write(f"Epoch {ep+1: >4}: Loss {avg_loss:.4f} | {summary}")
+                tqdm.write(f"Epoch {ep+1: >4}: Loss {avg_loss:.4f} | Grad norm {grad_norm:.4f} | {summary}")
 
     # ─── BATCHED STRATEGIES (single or multi-process) ───
     else:
@@ -900,9 +906,15 @@ def main():
                 avg_loss = np.mean(epoch_loss_acc)
                 losses.append(avg_loss)
                 
+                # Calculate epoch-level gradient norm for reporting
+                if len(epoch_loss_acc) > 0:
+                    epoch_grad_norm = np.linalg.norm(g)
+                else:
+                    epoch_grad_norm = 0.0
+                
                 if ARGS.profile or (ep % max(1, ARGS.epochs // 20) == 0):
                     summary = lap.summary_str()
-                    tqdm.write(f"Epoch {ep+1: >4}: Loss {avg_loss:.4f} | {summary}")
+                    tqdm.write(f"Epoch {ep+1: >4}: Loss {avg_loss:.4f} | Grad norm {epoch_grad_norm:.4f} | {summary}")
 
         # ─── MULTI-PROCESS STRATEGY ───
         else:
@@ -961,9 +973,12 @@ def main():
                 sample_losses = [result[0] for result in results]
                 grads = [result[1] for result in results]
                 
+                # Apply gradient updates and track gradient norms
+                grad_norms = []
                 for i in range(len(grads)):
                     step += 1
                     g = grads[i]
+                    grad_norms.append(np.linalg.norm(g))
                     m1 = b1 * m1 + (1 - b1) * g
                     v1 = b2 * v1 + (1 - b2) * (g**2)
                     m1h = m1 / (1 - b1**step)
@@ -972,11 +987,12 @@ def main():
                 
                 sample_losses = [result[0] for result in results if result is not None]
                 avg_loss = np.mean(sample_losses)
+                avg_grad_norm = np.mean(grad_norms) if grad_norms else 0.0
                 losses.append(avg_loss)
 
                 if ep % max(1, ARGS.epochs // 20) == 0:
                     summary = lap.summary_str()
-                    tqdm.write(f"Epoch {ep+1: >4}: Loss {avg_loss:.4f} | {summary}")
+                    tqdm.write(f"Epoch {ep+1: >4}: Loss {avg_loss:.4f} | Grad norm {avg_grad_norm:.4f} | {summary}")
 
     evaluate_model(make_wrapper(template, t, m, n, r), theta, Xte, Yte_onehot, 'binary', 'Final')
 
@@ -996,7 +1012,7 @@ def main():
             print("Visualizing initial boundary...")
             visualize_decision_boundary(
                 make_wrapper(template, t, m, n, r), initial_theta_snapshot, m, Xtr, Ytr_onehot, 'binary',
-                boundary=star_path,
+                boundary=boundary_path,
                 title=f'Initial Decision Boundary ({model_name})',
                 resolution=ARGS.boundary_resolution,
                 save_path=f'plots/decision_boundary_initial_{model_name}.png'
@@ -1006,7 +1022,7 @@ def main():
             print("Visualizing final boundary...")
             visualize_decision_boundary(
                 make_wrapper(template, t, m, n, r), theta, m, Xtr, Ytr_onehot, 'binary',
-                boundary=star_path,
+                boundary=boundary_path,
                 title=f'Final Decision Boundary ({model_name})',
                 resolution=ARGS.boundary_resolution,
                 save_path=f'plots/decision_boundary_final_{model_name}.png'

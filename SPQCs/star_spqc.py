@@ -7,6 +7,42 @@ from qiskit_aer import AerSimulator
 from qiskit.quantum_info import SparsePauliOp, Statevector
 from functools import reduce
 
+def create_efficientsu2_ansatz(n, thetas, reps=1):
+    """
+    Manually create an EfficientSU2-like ansatz for gradient compatibility.
+    
+    Args:
+        n: Number of qubits
+        thetas: List of parameters
+        reps: Number of repetitions (default: 1)
+    
+    Returns:
+        QuantumCircuit: EfficientSU2-like circuit with regular Parameters
+    """
+    circuit = QuantumCircuit(n)
+    param_idx = 0
+    
+    for rep in range(reps):
+        # Rotation layer: RY and RZ on each qubit
+        for q in range(n):
+            circuit.ry(thetas[param_idx], q)
+            param_idx += 1
+        for q in range(n):
+            circuit.rz(thetas[param_idx], q)
+            param_idx += 1
+            
+        # Entangling layer: CNOT gates (linear connectivity)
+        # Skip entangling layer on the last repetition
+        if rep < reps - 1:
+            for q in range(n - 1):
+                circuit.cx(q, q + 1)
+    
+    # Final entangling layer after all reps
+    for q in range(n - 1):
+        circuit.cx(q, q + 1)
+        
+    return circuit
+
 def create_spqc_circuit(t=0, m=2, n=2, r=1):
     """
     Create and return an SPQC circuit with specified parameters.
@@ -25,31 +61,37 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
     L = 2**m                    # number of sub-models
     T = 2**t                    # total number of term addresses
     anc = 1                     # single ancilla qubit to help with multi-control
-    params_per_model = 2        # e.g. one rotation per data qubit
     term_register = range(0,t)
     address_register = range(t,t+m)
     data_registers = [range(t+m+i*n,t+m+(i+1)*n) for i in range(r)]
-    term_addresses = ['1' * i + '0' * (t - i) for i in range(t+1)]
     ancilla = [total_qubits - 1]  # ancilla index
 
     ## --- SPQC Circuit --- 
     # Feature map
     feature_map = QuantumCircuit(n)
     input_thetas = [Parameter(f"input_theta{i}") for i in range(2)]
-    feature_map.ry(input_thetas[0],0)
-    feature_map.ry(input_thetas[1],1)
+    feature_map.ry(input_thetas[0]*2*np.pi,0)
+    feature_map.ry(input_thetas[1]*2*np.pi,1)
     fm = feature_map.to_gate(label=f"S(X)")
 
     # Parameterised sub-models
     sub_models = []
     for i in range(L):
+        # === CUSTOM ANSATZ (commented out) ===
         thetas = [Parameter(f"model{i}_theta{j}") for j in range(4)]
         sub_model = QuantumCircuit(n)
-        sub_model.ry(thetas[0],0)
-        sub_model.rx(thetas[1],0)
-        sub_model.ry(thetas[2],1)
-        sub_model.rx(thetas[3],1)
+        sub_model.rz(thetas[0], 0)
+        sub_model.rx(thetas[1], 0)
+        sub_model.ry(thetas[2], 1)
+        sub_model.rx(thetas[3], 1)
         sub_models.append(sub_model.to_gate(label=f"model{i}"))
+        
+        # === EFFICIENTSU2-LIKE ANSATZ (active) ===
+        # reps=1
+        # thetas = [Parameter(f"model{i}_theta{j}") for j in range(4*n*reps)]
+        # sub_model = create_efficientsu2_ansatz(n, thetas, reps)
+        # sub_models.append(sub_model.to_gate(label=f"model{i}"))
+   
 
     # Create SPQC with classical bits for measurements, append Hadamards and feature maps
     num_classical_bits = n*r + m  # One classical bit per data/address qubit
@@ -129,7 +171,18 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
         qc.append(pyramid_state(t, inverse=True), term_register)
 
     # Create address register ansatz
-    address_ansatz = EfficientSU2(m, reps=1, parameter_prefix='address_theta')
+    # address_ansatz = EfficientSU2(m, reps=1, parameter_prefix='address_theta')
+    # qc.append(address_ansatz, address_register)
+    address_ansatz = QuantumCircuit(m)
+    address_ansatz.ry(Parameter('address_theta'), 0)
+    address_ansatz.ry(Parameter('address_theta'), 1)
+    address_ansatz.ry(Parameter('address_theta'), 2)
+    address_ansatz.rx(Parameter('address_theta'), 0)
+    address_ansatz.rx(Parameter('address_theta'), 1)
+    address_ansatz.rx(Parameter('address_theta'), 2)
+    address_ansatz.rz(Parameter('address_theta'), 0)
+    address_ansatz.rz(Parameter('address_theta'), 1)
+    address_ansatz.rz(Parameter('address_theta'), 2)
     qc.append(address_ansatz, address_register)
 
     # Measure address register
@@ -176,8 +229,21 @@ def create_random_weights(circuit, seed=None):
     # Group model parameters by model number
     model_groups = {}
     for param in model_params:
-        # Extract model number from parameter name like "model0_theta1"
-        model_num = int(param.name.split('_')[0].replace('model', ''))
+        # Extract model number from parameter name
+        # Handle: "model0_theta1" (custom), "model0_ry1_0" (EfficientSU2-like), "model0[0]_ry_0" (old EfficientSU2)
+        param_name = param.name
+        if 'model' in param_name:
+            # Extract the number after 'model'
+            import re
+            match = re.search(r'model(\d+)', param_name)
+            if match:
+                model_num = int(match.group(1))
+            else:
+                # Fallback: try the old method
+                model_num = int(param_name.split('_')[0].replace('model', '').replace('[', '').replace(']', ''))
+        else:
+            continue  # Skip non-model parameters
+            
         if model_num not in model_groups:
             model_groups[model_num] = []
         model_groups[model_num].append(param)
