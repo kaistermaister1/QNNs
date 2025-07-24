@@ -10,8 +10,12 @@ import sys
 import time
 import multiprocessing as mp
 from typing import Tuple, List
+import warnings
 
 import numpy as np
+
+warnings.filterwarnings('ignore', category=UserWarning, module='qiskit_algorithms')
+warnings.filterwarnings('ignore', message='.*Casting complex values to real.*', module='qiskit_algorithms')
 import matplotlib.pyplot as plt
 from joblib import Parallel, delayed
 from tqdm import tqdm
@@ -21,12 +25,15 @@ from qiskit.primitives import StatevectorEstimator
 from qiskit_algorithms.gradients import ReverseEstimatorGradient
 from qiskit.quantum_info import SparsePauliOp, Statevector
 
-# Import our data and circuit functions
+# ───────── project imports ─────────
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(ROOT))
 from star_data import get_star_data
 from star_spqc import create_spqc_circuit, create_random_weights
+from star_eval import evaluate_model, visualize_decision_boundary
 
 # ─── Configuration ───
-RSEED = 42
+RSEED = 4
 EPS = 1e-10  # Small epsilon for numerical stability
 
 # ─── CLI Arguments ───
@@ -34,12 +41,14 @@ parser = argparse.ArgumentParser("Custom SPQC Binary Classifier")
 parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
 parser.add_argument("--cpus", type=int, default=None, help="Number of CPUs (default: all available)")
 parser.add_argument("--lr", type=float, default=0.01, help="Learning rate for Adam optimizer")
-parser.add_argument("--batch-size", type=int, default=1, help="Batch size (1 = per-sample)")
+parser.add_argument("--visualize-boundary", action="store_true",
+    help="Generate and save decision boundary plots after training.")
+parser.add_argument("--boundary-resolution", type=int, default=64,
+    help="Grid resolution for boundary visualization (default: 64)")
 args = parser.parse_args()
 
 # Resource configuration
 N_CPUS = args.cpus or mp.cpu_count()
-BATCH_SIZE = args.batch_size
 
 def create_binary_projectors(t: int, m: int, n: int, r: int) -> List[SparsePauliOp]:
     """
@@ -132,13 +141,14 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
     """
     # Create parameter values: [input_params..., model_params..., address_params...]
     params = list(circuit.parameters)
+    param_pos = {p: i for i, p in enumerate(params)}
     values = np.zeros(len(params))
     
     # Set input parameters
-    input_params = [p for p in params if p.name.startswith('input_theta')]
+    input_params = [p for p in params if p.name.startswith('zinput_theta')]
     for i, param in enumerate(input_params):
         if i < len(x):
-            values[params.index(param)] = x[i]
+            values[param_pos[param]] = x[i]
     
     # Set trainable parameters
     for i, param_idx in enumerate(param_indices):
@@ -146,19 +156,20 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
             values[param_idx] = theta[i]
     
     # Compute expectation values for both projectors
-    circuits = [circuit, circuit]
-    observables = projectors
-    parameter_values = [values, values]
+    pubs = [(circuit, projectors[0], values), (circuit, projectors[1], values)]
     
     # Get probabilities
-    result = estimator.run(circuits, observables, parameter_values).result()
-    p_out = np.clip(result[0].data.evs, EPS, 1.0 - EPS)
-    p_in = np.clip(result[1].data.evs, EPS, 1.0 - EPS)
+    result = estimator.run(pubs).result()
+    p_out = float(result[0].data.evs)
+    p_in = float(result[1].data.evs)
+    p_out = np.clip(p_out, EPS, 1.0 - EPS)
+    p_in = np.clip(p_in, EPS, 1.0 - EPS)
     
     # Normalize probabilities
     total_prob = p_out + p_in
-    p_out = p_out / total_prob
-    p_in = p_in / total_prob
+    if total_prob > EPS:
+        p_out = p_out / total_prob
+        p_in = p_in / total_prob
     
     # Binary cross-entropy loss
     if y == 0:  # Inside class
@@ -166,7 +177,10 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
     else:  # Outside class (y == 1)
         loss = -np.log(p_out + EPS)
     
-    # Compute gradients
+    # Compute gradients  
+    circuits = [circuit, circuit]
+    observables = projectors  # [P_out, P_in]
+    parameter_values = [values, values]
     grad_result = gradient_calc.run(circuits, observables, parameter_values).result()
     grad_out = grad_result.gradients[0]
     grad_in = grad_result.gradients[1]
@@ -212,19 +226,84 @@ def compute_sample_loss_grad(theta: np.ndarray, sample_idx: int) -> Tuple[float,
         x, y, theta, g_param_indices
     )
 
+class SPQCModel:
+    """Wrapper model class to make our circuit compatible with star_eval.evaluate_model"""
+    
+    def __init__(self, circuit, projectors, param_indices):
+        self.circuit = circuit
+        self.projectors = projectors
+        self.param_indices = param_indices
+        
+    def forward(self, x, theta):
+        """
+        Forward pass that returns address amplitudes compatible with star_eval.
+        
+        For projector-based approach, we need to compute the probabilities and
+        convert them to address amplitudes format expected by star_eval.
+        
+        Args:
+            x: Input features [x_coord, y_coord]
+            theta: Parameter values
+            
+        Returns:
+            numpy.ndarray: Address amplitudes (simulated from probabilities)
+        """
+        estimator = StatevectorEstimator()
+        
+        # Get parameters
+        params = list(self.circuit.parameters)
+        param_pos = {p: i for i, p in enumerate(params)}
+        values = np.zeros(len(params))
+        
+        # Set input parameters
+        input_params = [p for p in params if p.name.startswith('zinput_theta')]
+        for i, param in enumerate(input_params):
+            if i < len(x):
+                values[param_pos[param]] = x[i]
+        
+        # Set trainable parameters
+        for i, param_idx in enumerate(self.param_indices):
+            if i < len(theta):
+                values[param_idx] = theta[i]
+        
+        # Get probabilities from projectors
+        pubs = [(self.circuit, self.projectors[0], values), (self.circuit, self.projectors[1], values)]
+        
+        result = estimator.run(pubs).result()
+        p_out = float(result[0].data.evs)
+        p_in = float(result[1].data.evs)
+        
+        # Convert to address amplitudes format (8 addresses for m=3)
+        # p_out corresponds to addresses 0-3, p_in to addresses 4-7
+        addr_amps = np.zeros(8, dtype=complex)
+        
+        # Distribute probabilities evenly among addresses in each class
+        # Convert probabilities to amplitudes (sqrt)
+        amp_out = np.sqrt(p_out / 4) if p_out > 0 else 0
+        amp_in = np.sqrt(p_in / 4) if p_in > 0 else 0
+        
+        # Fill address amplitudes
+        addr_amps[0:4] = amp_out  # outside class (addresses 0-3)
+        addr_amps[4:8] = amp_in   # inside class (addresses 4-7)
+        
+        addr_norm = np.linalg.norm(addr_amps)
+        if addr_norm > 0:
+            addr_amps = addr_amps / addr_norm
+        
+        return addr_amps
+
+
+
 def main():
     print(f"Custom SPQC Binary Classifier")
-    print(f"CPUs: {N_CPUS}, Batch size: {BATCH_SIZE}")
+    print(f"CPUs: {N_CPUS}")
     
     # ─── Data Loading ───
-    print("\nLoading star data...")
-    X_train, X_test, y_train, y_test, star_path = get_star_data(200)
-    print(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
-    print(f"Training labels: {np.bincount(y_train.astype(int))} (inside=0, outside=1)")
+    X_train, X_test, y_train, y_test, boundary_path = get_star_data(200)
     
     # ─── Circuit Setup ───
-    print("\nSetting up quantum circuit...")
     t, m, n, r = 0, 3, 2, 1  # SPQC parameters
+    model_name = f"t{t}_m{m}_n{n}_r{r}"
     print(f"Circuit: t={t}, m={m}, n={n}, r={r} -> {t+m+n*r+1} qubits")
     
     # Create circuit without measurements for gradient computation
@@ -235,28 +314,39 @@ def main():
             circuit.append(inst.operation, inst.qubits)
     
     # Transpile circuit
-    print("Transpiling circuit...")
     circuit = transpile(circuit, optimization_level=1)
+
+    # Print parameter indices and names after transpilation
+    params = list(circuit.parameters)
+    print("Parameter indices and names after transpilation:")
+    for idx, param in enumerate(params):
+        print(f"  {idx:2d}: {param.name}")
     
     # ─── Parameter Setup ───
-    # Get trainable parameter indices (model + address parameters)
+    # Get trainable parameter indices in the same order as create_random_weights
+    # (model parameters first, then address parameters)
     params = list(circuit.parameters)
-    param_indices = []
-    for i, param in enumerate(params):
-        if param.name.startswith('model') or param.name.startswith('address_theta'):
-            param_indices.append(i)
-    
-    print(f"Total parameters: {len(params)}, Trainable: {len(param_indices)}")
+    model_indices = [i for i, param in enumerate(params) if param.name.startswith('model')]
+    address_indices = [i for i, param in enumerate(params) if param.name.startswith('address_theta')]
+    param_indices = model_indices + address_indices  # model first, then address (matches create_random_weights)
     
     # Initialize weights
     np.random.seed(RSEED)
-    theta = create_random_weights(frame, seed=RSEED)
-    print(f"Initial weights shape: {theta.shape}")
+    theta = create_random_weights(circuit, seed=RSEED)
+    initial_theta_snapshot = theta.copy()
     
     # ─── Projector Setup ───
-    print("Creating binary projectors...")
     projectors = create_binary_projectors(t, m, n, r)
-    print(f"Created {len(projectors)} projectors (out, in)")
+    
+    # ─── Model Wrapper Setup ───
+    spqc_model = SPQCModel(circuit, projectors, param_indices)
+    
+    # Convert scalar labels to one-hot for binary classification (only for evaluation)
+    # 0 (inside) -> [1, 0], 1 (outside) -> [0, 1]
+    y_test_onehot = np.eye(2)[y_test.astype(int)]
+    
+    # ─── Initial Evaluation ───
+    initial_acc = evaluate_model(spqc_model, theta, X_test, y_test_onehot, 'binary', "Initial (Random Weights)")
     
     # ─── Training Setup ───
     print(f"\nStarting training for {args.epochs} epochs...")
@@ -286,84 +376,57 @@ def main():
         )
     
     # ─── Training Loop ───
-    for epoch in range(args.epochs):
+    step = 0
+    training_start_time = time.time()
+    
+    for epoch in tqdm(range(args.epochs), desc='Epoch'):
         epoch_start = time.time()
         
         # Shuffle training indices
         indices = np.random.permutation(len(X_train))
+        epoch_loss_acc = 0.0
+        epoch_grads = []  # Collect gradients for gradient norm calculation
         
-        if pool is None:
-            # Single process
-            results = [compute_sample_loss_grad(theta, idx) for idx in tqdm(indices, desc=f"Epoch {epoch+1}")]
+        num_workers = 1 if pool is None else N_CPUS
+        
+        # Process data in chunks of size num_workers
+        for i in range(0, len(indices), num_workers):
+            chunk_indices = indices[i:i+num_workers]
+            
+            if pool is None:
+                # Single process serial execution
+                results = [compute_sample_loss_grad(theta, idx) for idx in chunk_indices]
+            else:
+                # Parallel computation of gradients for the chunk
+                results = pool(delayed(compute_sample_loss_grad)(theta, idx) for idx in chunk_indices)
+            
+            # Adam update for each sample in the processed chunk
+            for loss, grad in results:
+                step += 1
+                epoch_grads.append(grad)
+                m1 = beta1 * m1 + (1 - beta1) * grad
+                v1 = beta2 * v1 + (1 - beta2) * (grad**2)
+                m1_hat = m1 / (1 - beta1**step)
+                v1_hat = v1 / (1 - beta2**step)
+                theta -= lr * m1_hat / (np.sqrt(v1_hat) + 1e-8)
+                epoch_loss_acc += loss
+
+        mean_epoch_loss = epoch_loss_acc / len(X_train)
+        losses.append(mean_epoch_loss)
+        
+        # Calculate gradient norm for the epoch
+        if len(epoch_grads) > 0:
+            mean_grad = np.mean(epoch_grads, axis=0)
+            grad_norm = np.linalg.norm(mean_grad)
         else:
-            # Multi-process
-            results = pool(delayed(compute_sample_loss_grad)(theta, idx) for idx in indices)
+            grad_norm = 0.0
         
-        # Extract losses and gradients
-        epoch_losses = [r[0] for r in results]
-        epoch_grads = [r[1] for r in results]
-        
-        # Compute mean loss and gradient
-        mean_loss = np.mean(epoch_losses)
-        mean_grad = np.mean(epoch_grads, axis=0)
-        grad_norm = np.linalg.norm(mean_grad)
-        
-        # Adam update
-        step = epoch + 1
-        m1 = beta1 * m1 + (1 - beta1) * mean_grad
-        v1 = beta2 * v1 + (1 - beta2) * (mean_grad**2)
-        m1_hat = m1 / (1 - beta1**step)
-        v1_hat = v1 / (1 - beta2**step)
-        theta -= lr * m1_hat / (np.sqrt(v1_hat) + 1e-8)
-        
-        # Record loss
-        losses.append(mean_loss)
-        
-        epoch_time = time.time() - epoch_start
-        print(f"Epoch {epoch+1:2d}: Loss {mean_loss:.4f} | Grad norm {grad_norm:.4f} | Time {epoch_time:.1f}s")
+        tqdm.write(f"Epoch {epoch+1: >4}: Loss {mean_epoch_loss:.4f} | Grad norm {grad_norm:.4f}")
     
-    # ─── Evaluation ───
-    print(f"\nTraining complete!")
-    print(f"Final loss: {losses[-1]:.4f}")
+    # ─── Final Evaluation ───
+    print(f"\nTraining complete! Final loss: {losses[-1]:.4f}")
     
-    # Simple evaluation on test set
-    if N_CPUS == 1:
-        estimator = g_estimator
-    else:
-        estimator = StatevectorEstimator()
-    
-    print("\nEvaluating on test set...")
-    correct = 0
-    for i in range(len(X_test)):
-        x = X_test[i]
-        y_true = int(y_test[i])
-        
-        # Get parameters
-        params = list(circuit.parameters)
-        values = np.zeros(len(params))
-        
-        # Set input parameters
-        input_params = [p for p in params if p.name.startswith('input_theta')]
-        for j, param in enumerate(input_params):
-            if j < len(x):
-                values[params.index(param)] = x[j]
-        
-        # Set trained parameters
-        for j, param_idx in enumerate(param_indices):
-            if j < len(theta):
-                values[param_idx] = theta[j]
-        
-        # Get predictions
-        result = estimator.run([circuit, circuit], projectors, [values, values]).result()
-        p_out = result[0].data.evs
-        p_in = result[1].data.evs
-        
-        y_pred = 0 if p_in > p_out else 1
-        if y_pred == y_true:
-            correct += 1
-    
-    accuracy = correct / len(X_test)
-    print(f"Test accuracy: {accuracy:.3f} ({correct}/{len(X_test)})")
+    final_acc = evaluate_model(spqc_model, theta, X_test, y_test_onehot, 'binary', "Final (Trained Weights)")
     
     # ─── Save Results ───
     os.makedirs('plots', exist_ok=True)
@@ -373,20 +436,55 @@ def main():
     plt.plot(range(1, len(losses)+1), losses, 'o-', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('Binary Cross-Entropy Loss')
-    plt.title('Training Loss (Custom SPQC)')
+    plt.title(f'Training Loss (Custom SPQC {model_name})')
     plt.grid(True, alpha=0.3)
     plt.yscale('log')
     plt.tight_layout()
-    plt.savefig('plots/custom_training_loss.png', dpi=300)
-    print("Loss plot saved to plots/custom_training_loss.png")
+    loss_plot_path = f'plots/loss_{model_name}.png'
+    plt.savefig(loss_plot_path, dpi=300)
+    print(f"Loss plot saved to {loss_plot_path}")
+    
+    # ───────── Visualize Decision Boundary ─────────
+    if args.visualize_boundary:
+        print("\n" + "="*50)
+        print("Visualizing Decision Boundaries...")
+        print("="*50)
+        try:
+            # --- Initial Boundary ---
+            print("Visualizing initial boundary...")
+            visualize_decision_boundary(
+                spqc_model, initial_theta_snapshot, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
+                boundary=boundary_path,
+                title=f'Initial Decision Boundary (Custom {model_name})',
+                resolution=args.boundary_resolution,
+                save_path=f'plots/initboundary_{model_name}.png'
+            )
+
+            # --- Final Boundary ---
+            print("Visualizing final boundary...")
+            visualize_decision_boundary(
+                spqc_model, theta, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
+                boundary=boundary_path,
+                title=f'Final Decision Boundary (Custom {model_name})',
+                resolution=args.boundary_resolution,
+                save_path=f'plots/finalboundary_{model_name}.png'
+            )
+            
+        except ImportError:
+            print("\nWarning: Could not import 'visualize_decision_boundary' from 'star_eval.py'.")
+            print("         Please ensure the file exists and is in the correct path.")
+        except Exception as e:
+            print(f"\nAn error occurred during boundary visualization: {e}")
     
     # Save weights
     os.makedirs('weights', exist_ok=True)
-    np.savez('weights/custom_model_weights.npz', 
+    weights_path = f'weights/weights_{model_name}.npz'
+    np.savez(weights_path, 
              final_weights=theta, 
              loss_history=losses,
-             test_accuracy=accuracy)
-    print("Weights saved to weights/custom_model_weights.npz")
+             initial_accuracy=initial_acc,
+             final_accuracy=final_acc)
+    print(f"Weights saved to {weights_path}")
 
 if __name__ == "__main__":
     main() 

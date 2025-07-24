@@ -69,7 +69,7 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
     ## --- SPQC Circuit --- 
     # Feature map
     feature_map = QuantumCircuit(n)
-    input_thetas = [Parameter(f"input_theta{i}") for i in range(2)]
+    input_thetas = [Parameter(f"zinput_theta{i}") for i in range(2)] # z for alphabetical order (should come last)
     feature_map.ry(input_thetas[0]*2*np.pi,0)
     feature_map.ry(input_thetas[1]*2*np.pi,1)
     fm = feature_map.to_gate(label=f"S(X)")
@@ -80,7 +80,7 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
         # === CUSTOM ANSATZ (commented out) ===
         thetas = [Parameter(f"model{i}_theta{j}") for j in range(4)]
         sub_model = QuantumCircuit(n)
-        sub_model.rz(thetas[0], 0)
+        sub_model.ry(thetas[0], 0)
         sub_model.rx(thetas[1], 0)
         sub_model.ry(thetas[2], 1)
         sub_model.rx(thetas[3], 1)
@@ -174,15 +174,15 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
     # address_ansatz = EfficientSU2(m, reps=1, parameter_prefix='address_theta')
     # qc.append(address_ansatz, address_register)
     address_ansatz = QuantumCircuit(m)
-    address_ansatz.ry(Parameter('address_theta'), 0)
-    address_ansatz.ry(Parameter('address_theta'), 1)
-    address_ansatz.ry(Parameter('address_theta'), 2)
-    address_ansatz.rx(Parameter('address_theta'), 0)
-    address_ansatz.rx(Parameter('address_theta'), 1)
-    address_ansatz.rx(Parameter('address_theta'), 2)
-    address_ansatz.rz(Parameter('address_theta'), 0)
-    address_ansatz.rz(Parameter('address_theta'), 1)
-    address_ansatz.rz(Parameter('address_theta'), 2)
+    address_ansatz.ry(Parameter('address_theta_0'), 0)
+    address_ansatz.ry(Parameter('address_theta_1'), 1)
+    address_ansatz.ry(Parameter('address_theta_2'), 2)
+    address_ansatz.rx(Parameter('address_theta_3'), 0)
+    address_ansatz.rx(Parameter('address_theta_4'), 1)
+    address_ansatz.rx(Parameter('address_theta_5'), 2)
+    address_ansatz.rz(Parameter('address_theta_6'), 0)
+    address_ansatz.rz(Parameter('address_theta_7'), 1)
+    address_ansatz.rz(Parameter('address_theta_8'), 2)
     qc.append(address_ansatz, address_register)
 
     # Measure address register
@@ -201,7 +201,7 @@ def get_parameter_mapping(circuit):
     address_params = []
     
     for param in circuit.parameters:
-        if param.name.startswith('input_theta'):
+        if param.name.startswith('zinput_theta'):
             input_params.append(param)
         elif param.name.startswith('model'):
             model_params.append(param)
@@ -210,7 +210,7 @@ def get_parameter_mapping(circuit):
     
     return input_params, model_params, address_params
 
-def create_random_weights(circuit, seed=None):
+def create_random_weights(circuit, seed=None, transpiled=False):
     """
     Create random weights for the SPQC with disjoint weight sets for each model.
     
@@ -230,7 +230,6 @@ def create_random_weights(circuit, seed=None):
     model_groups = {}
     for param in model_params:
         # Extract model number from parameter name
-        # Handle: "model0_theta1" (custom), "model0_ry1_0" (EfficientSU2-like), "model0[0]_ry_0" (old EfficientSU2)
         param_name = param.name
         if 'model' in param_name:
             # Extract the number after 'model'
@@ -273,7 +272,10 @@ def create_random_weights(circuit, seed=None):
     address_weights = np.random.uniform(-np.pi, np.pi, len(address_params))
     
     # Combine model and address weights
-    all_weights = np.concatenate([model_weights, address_weights])
+    if not transpiled:
+        all_weights = np.concatenate([address_weights, model_weights])
+    else:
+        all_weights = np.concatenate([model_weights, address_weights])
     
     return all_weights
 

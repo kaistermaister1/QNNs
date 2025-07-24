@@ -65,12 +65,14 @@ def evaluate_model(spqc_model, θ, test_features, test_labels_onehot, mode, titl
 
     print("Running predictions on test set...")
     for i, x in enumerate(test_features):
-        amplitudes = spqc_model.forward(x, θ)
+        amplitudes = spqc_model.forward(x, θ) # Returns a 2^m vector of synthetic amplitudes (sum of first half are p_out, sum of second half are p_in)
         # In star_eval.py - evaluate_model function
         if mode == 'binary':
-            # Only consider first 2 amplitudes for binary classification
+            # Sum addresses 0-3 for class 1 (outside), 4-7 for class 0 (inside)
             relevant_probs = np.abs(amplitudes)**2
-            predicted_class = np.argmax(relevant_probs[:2])
+            sum1 = np.sum(relevant_probs[0:4])  # addresses 0-3: class 1, outside
+            sum0 = np.sum(relevant_probs[4:8])  # addresses 4-7: class 0, inside
+            predicted_class = np.argmax([sum0, sum1])
         elif mode == 'wedge':
             # Use all amplitudes for wedge classification  
             predicted_class = np.argmax(np.abs(amplitudes)**2)

@@ -99,7 +99,7 @@ def gradient_sample(x,theta,y,t,m,n,r,shift=np.pi/2):
             param_binding = {}
             
             # Get parameter types
-            input_params = [p for p in params if p.name.startswith('input_theta')]
+            input_params = [p for p in params if p.name.startswith('zinput_theta')]
             model_params = [p for p in params if p.name.startswith('model')]
             address_params = [p for p in params if p.name.startswith('address_theta')]
             
@@ -153,7 +153,7 @@ def make_wrapper(qc,t,m,n,r):
     address_params = []
     
     for param in tpl.parameters:
-        if param.name.startswith('input_theta'):
+        if param.name.startswith('zinput_theta'):
             input_params.append(param)
         elif param.name.startswith('model'):
             model_params.append(param)

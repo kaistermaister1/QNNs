@@ -265,7 +265,7 @@ def plot_decision_boundary(template, theta, X, y, star_path, t, m, n, r, save_pa
     This is the main public function of this script.
     """
     # 1. Pre-computation
-    input_params = [p for p in template.parameters if p.name.startswith('input_theta')]
+    input_params = [p for p in template.parameters if p.name.startswith('zinput_theta')]
     model_params = [p for p in template.parameters if p.name.startswith('model')]
     address_params = [p for p in template.parameters if p.name.startswith('address_theta')]
     

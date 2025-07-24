@@ -175,7 +175,7 @@ def make_binary_projectors(t, m, k):               # k = n*r
         for addr_state in address_states:
             proj_list = [None] * N
             
-            # Ancillas (if any) are projected to |0>
+            # Term qubits (if any) are projected to |0>
             for i in range(t):
                 proj_list[i] = p0
                 
@@ -192,7 +192,7 @@ def make_binary_projectors(t, m, k):               # k = n*r
                 q_idx = t + m + i
                 proj_list[q_idx] = p0
                 
-            # Trash qubit is projected to |0>
+            # Ancilla qubit is projected to |0>
             proj_list[t+m+k] = p0
             
             # Tensor product all projectors (Qiskit is little-endian)
@@ -215,8 +215,8 @@ def make_binary_projectors(t, m, k):               # k = n*r
         return result.simplify()
 
     # For m=3, we have 8 address states (0-7)
-    # Outside (class 0): sum over address states 0-3  
-    # Inside (class 1): sum over address states 4-7
+    # Outside (class 1): sum over address states 0-3  
+    # Inside (class 0): sum over address states 4-7
     num_addr_states = 2**m
     half = num_addr_states // 2
     
@@ -227,53 +227,6 @@ def make_binary_projectors(t, m, k):               # k = n*r
     inside_proj = create_address_projector(inside_states)
     
     return [outside_proj, inside_proj]  # Return list where index matches binary label
-
-def make_projectors(t, m, k):               # k = n*r
-    """Create projection operators for measuring address qubit probabilities"""
-    N = t + m + k + 1
-    p0 = SparsePauliOp("Z", coeffs=[0.5]) + SparsePauliOp("I", coeffs=[0.5])
-    p1 = SparsePauliOp("I", coeffs=[0.5]) - SparsePauliOp("Z", coeffs=[0.5])
-
-    memo = {}
-
-    def proj(label):
-        if label in memo:
-            return memo[label]
-
-        proj_list = [None] * N
-        
-        # Ancillas (if any) are projected to |0>
-        for i in range(t):
-            proj_list[i] = p0
-            
-        # Address qubits are projected based on label
-        for i in range(m):
-            q_idx = t + i
-            if ((label >> i) & 1) == 0:
-                proj_list[q_idx] = p0
-            else:
-                proj_list[q_idx] = p1
-                
-        # Data qubits are projected to |0>
-        for i in range(k):
-            q_idx = t + m + i
-            proj_list[q_idx] = p0
-            
-        # Trash qubit is projected to |0>
-        proj_list[t+m+k] = p0
-        
-        # Tensor product all projectors (Qiskit is little-endian)
-        rev_proj_list = proj_list[::-1]
-        
-        full_projector = rev_proj_list[0]
-        for i in range(1, N):
-            full_projector = full_projector.tensor(rev_proj_list[i])
-        
-        result = full_projector.simplify()
-        memo[label] = result
-        return result
-        
-    return proj
 
 # Helper function to create appropriate Estimator
 def create_estimator():
@@ -461,7 +414,7 @@ def make_wrapper(qc, t, m, n, r):
     address_params = []
     
     for param in tpl.parameters:
-        if param.name.startswith('input_theta'):
+        if param.name.startswith('zinput_theta'):
             input_params.append(param)
         elif param.name.startswith('model'):
             model_params.append(param)
@@ -501,6 +454,7 @@ def make_wrapper(qc, t, m, n, r):
         bound_circuit = tpl.assign_parameters(param_binding)
         # Use Statevector.from_instruction for reliable statevector access
         sv = Statevector.from_instruction(bound_circuit).data
+        
         return addr_amplitudes(sv, t, m, n, r)
     
     class W: 
@@ -521,7 +475,7 @@ def addr_amplitudes(sv: np.ndarray, t: int, m: int, n: int, r: int) -> np.ndarra
 def small_make_values(theta, x, params):
     # identical to old make_values()
     param_binding = {}
-    input_params = [p for p in params if p.name.startswith('input_theta')]
+    input_params = [p for p in params if p.name.startswith('zinput_theta')]
     model_params = [p for p in params if p.name.startswith('model')]
     address_params = [p for p in params if p.name.startswith('address_theta')]
     for j,p in enumerate(input_params):  param_binding[p] = x[j] if j < len(x) else 0.0
@@ -733,7 +687,7 @@ def main():
 
     # ─── Parameter Index Mapping (after transpilation) ───
     params = list(template.parameters)
-    input_idx    = [i for i,p in enumerate(params) if p.name.startswith("input_theta")]
+    input_idx    = [i for i,p in enumerate(params) if p.name.startswith("zinput_theta")]
     model_idx    = [i for i,p in enumerate(params) if p.name.startswith("model")]
     address_idx  = [i for i,p in enumerate(params) if p.name.startswith("address_theta")]
     weight_idxs  = model_idx + address_idx
