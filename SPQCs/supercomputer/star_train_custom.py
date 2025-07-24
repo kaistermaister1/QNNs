@@ -34,7 +34,11 @@ from star_eval import evaluate_model, visualize_decision_boundary
 
 # ─── Configuration ───
 RSEED = 4
+SHAPE = "star"
+t, m, n, r = 0, 3, 2, 1
+model_name = f"{SHAPE}_t{t}_m{m}_n{n}_r{r}_s{RSEED}"
 EPS = 1e-10  # Small epsilon for numerical stability
+
 
 # ─── CLI Arguments ───
 parser = argparse.ArgumentParser("Custom SPQC Binary Classifier")
@@ -299,14 +303,13 @@ def main():
     print(f"CPUs: {N_CPUS}")
     
     # ─── Data Loading ───
-    X_train, X_test, y_train, y_test, boundary_path = get_star_data(200)
-    
-    # ─── Circuit Setup ───
-    t, m, n, r = 0, 3, 2, 1  # SPQC parameters
-    model_name = f"t{t}_m{m}_n{n}_r{r}"
-    print(f"Circuit: t={t}, m={m}, n={n}, r={r} -> {t+m+n*r+1} qubits")
+    # Dynamically import the correct data loader based on SHAPE
+    _data_module = __import__(f"{SHAPE}_data", fromlist=[f"get_{SHAPE}_data"])
+    get_data_func = getattr(_data_module, f"get_{SHAPE}_data")
+    X_train, X_test, y_train, y_test, boundary_path = get_data_func(200)
     
     # Create circuit without measurements for gradient computation
+    print(f"Circuit: t={t}, m={m}, n={n}, r={r} -> {t+m+n*r+1} qubits")
     frame = create_spqc_circuit(t=t, m=m, n=n, r=r)
     circuit = QuantumCircuit(frame.num_qubits)
     for inst in frame.data:
@@ -315,12 +318,7 @@ def main():
     
     # Transpile circuit
     circuit = transpile(circuit, optimization_level=1)
-
-    # Print parameter indices and names after transpilation
     params = list(circuit.parameters)
-    print("Parameter indices and names after transpilation:")
-    for idx, param in enumerate(params):
-        print(f"  {idx:2d}: {param.name}")
     
     # ─── Parameter Setup ───
     # Get trainable parameter indices in the same order as create_random_weights
@@ -455,21 +453,23 @@ def main():
             visualize_decision_boundary(
                 spqc_model, initial_theta_snapshot, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
-                title=f'Initial Decision Boundary (Custom {model_name})',
+                title=f'Initial Decision Boundary (Custom {model_name}) | Epochs: {args.epochs}',
                 resolution=args.boundary_resolution,
                 save_path=f'plots/initboundary_{model_name}.png'
             )
+            print(f"Initial boundary saved to {f'plots/initboundary_{model_name}.png'}")
 
             # --- Final Boundary ---
             print("Visualizing final boundary...")
             visualize_decision_boundary(
                 spqc_model, theta, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
-                title=f'Final Decision Boundary (Custom {model_name})',
+                title=f'Final Decision Boundary (Custom {model_name}) | Epochs: {args.epochs}',
                 resolution=args.boundary_resolution,
                 save_path=f'plots/finalboundary_{model_name}.png'
             )
-            
+            print(f"Final boundary saved to {f'plots/finalboundary_{model_name}.png'}")
+                        
         except ImportError:
             print("\nWarning: Could not import 'visualize_decision_boundary' from 'star_eval.py'.")
             print("         Please ensure the file exists and is in the correct path.")

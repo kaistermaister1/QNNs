@@ -270,6 +270,7 @@ def create_estimator():
 g_est = None  
 g_grd = None
 g_proj_fn = None
+g_binary_proj_cache = None
 g_template = None
 g_params = None
 g_weight_idxs = None
