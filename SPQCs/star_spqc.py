@@ -77,7 +77,7 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
     # Parameterised sub-models
     sub_models = []
     for i in range(L):
-        # === CUSTOM ANSATZ (commented out) ===
+        # === CUSTOM ANSATZ ===
         thetas = [Parameter(f"model{i}_theta{j}") for j in range(4)]
         sub_model = QuantumCircuit(n)
         sub_model.ry(thetas[0], 0)
@@ -86,7 +86,7 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
         sub_model.rx(thetas[3], 1)
         sub_models.append(sub_model.to_gate(label=f"model{i}"))
         
-        # === EFFICIENTSU2-LIKE ANSATZ (active) ===
+        # === EFFICIENTSU2-LIKE ANSATZ ===
         # reps=1
         # thetas = [Parameter(f"model{i}_theta{j}") for j in range(4*n*reps)]
         # sub_model = create_efficientsu2_ansatz(n, thetas, reps)

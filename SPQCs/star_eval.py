@@ -162,9 +162,16 @@ def visualize_decision_boundary(
     ax.contour(xx, yy, Z, levels=[0.5], colors='lime', linewidths=3)
 
     # optional true boundary
-    if boundary is not None:
-        verts = boundary.vertices
-        ax.plot(verts[:, 0], verts[:, 1], 'k-', linewidth=2.5, label='True boundary')
+    if boundary:
+        if isinstance(boundary, list):
+            for i, path in enumerate(boundary):
+                vertices = path.vertices
+                # Only label the first blob to avoid legend spam
+                label = 'Blob boundary' if i == 0 else None
+                ax.plot(vertices[:, 0], vertices[:, 1], 'k-', linewidth=3, label=label)
+        else:
+            vertices = boundary.vertices
+            ax.plot(vertices[:, 0], vertices[:, 1], 'k-', linewidth=3, label='True Boundary')
 
     cbar = fig.colorbar(mappable, ax=ax)
     cbar.set_label('p_in')

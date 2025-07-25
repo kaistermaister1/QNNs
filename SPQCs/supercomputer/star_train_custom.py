@@ -35,8 +35,10 @@ from star_eval import evaluate_model, visualize_decision_boundary
 # ─── Configuration ───
 RSEED = 4
 SHAPE = "star"
+SAMPLES = 5000
+BATCH = 1  # Batch size for gradient/loss calculation
 t, m, n, r = 0, 3, 2, 1
-model_name = f"{SHAPE}_t{t}_m{m}_n{n}_r{r}_s{RSEED}"
+model_name = f"{SHAPE}_t{t}_m{m}_n{n}_r{r}_s{RSEED}_{SAMPLES}samples_b{BATCH}"
 EPS = 1e-10  # Small epsilon for numerical stability
 
 
@@ -44,7 +46,7 @@ EPS = 1e-10  # Small epsilon for numerical stability
 parser = argparse.ArgumentParser("Custom SPQC Binary Classifier")
 parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
 parser.add_argument("--cpus", type=int, default=None, help="Number of CPUs (default: all available)")
-parser.add_argument("--lr", type=float, default=0.01, help="Learning rate for Adam optimizer")
+parser.add_argument("--lr", type=float, default=0.001, help="Learning rate for Adam optimizer")
 parser.add_argument("--visualize-boundary", action="store_true",
     help="Generate and save decision boundary plots after training.")
 parser.add_argument("--boundary-resolution", type=int, default=64,
@@ -129,57 +131,42 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
                              param_indices: List[int]) -> Tuple[float, np.ndarray]:
     """
     Compute binary cross-entropy loss and gradient for a single sample.
-    
-    Args:
-        estimator: Qiskit estimator
-        gradient_calc: ReverseEstimatorGradient calculator
-        circuit: Parameterized quantum circuit
-        projectors: [P_out, P_in] projection operators
-        x: Input features [x_coord, y_coord]
-        y: Target label (0=inside, 1=outside)
-        theta: Parameter values
-        param_indices: Indices of trainable parameters
-        
-    Returns:
-        (loss, gradient) tuple
     """
     # Create parameter values: [input_params..., model_params..., address_params...]
     params = list(circuit.parameters)
     param_pos = {p: i for i, p in enumerate(params)}
     values = np.zeros(len(params))
-    
+
     # Set input parameters
     input_params = [p for p in params if p.name.startswith('zinput_theta')]
     for i, param in enumerate(input_params):
         if i < len(x):
             values[param_pos[param]] = x[i]
-    
+
     # Set trainable parameters
     for i, param_idx in enumerate(param_indices):
         if i < len(theta):
             values[param_idx] = theta[i]
-    
+
     # Compute expectation values for both projectors
     pubs = [(circuit, projectors[0], values), (circuit, projectors[1], values)]
-    
+
     # Get probabilities
     result = estimator.run(pubs).result()
-    p_out = float(result[0].data.evs)
-    p_in = float(result[1].data.evs)
-    p_out = np.clip(p_out, EPS, 1.0 - EPS)
-    p_in = np.clip(p_in, EPS, 1.0 - EPS)
-    
-    # Normalize probabilities
-    total_prob = p_out + p_in
-    if total_prob > EPS:
-        p_out = p_out / total_prob
-        p_in = p_in / total_prob
-    
-    # Binary cross-entropy loss
+    p_out_raw = float(result[0].data.evs)
+    p_in_raw  = float(result[1].data.evs)
+
+    # For the loss only (clipping)
+    S_raw = p_in_raw + p_out_raw
+    S     = max(S_raw, EPS)
+    p_in_hat  = p_in_raw  / S
+    p_out_hat = p_out_raw / S
+
+    # Binary cross-entropy loss (normalized)
     if y == 0:  # Inside class
-        loss = -np.log(p_in + EPS)
+        loss = -np.log(p_in_hat + EPS)
     else:  # Outside class (y == 1)
-        loss = -np.log(p_out + EPS)
+        loss = -np.log(p_out_hat + EPS)
     
     # Compute gradients  
     circuits = [circuit, circuit]
@@ -188,15 +175,14 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
     grad_result = gradient_calc.run(circuits, observables, parameter_values).result()
     grad_out = grad_result.gradients[0]
     grad_in = grad_result.gradients[1]
-    
-    # Chain rule for binary cross-entropy
-    if y == 0:  # Inside class
-        # ∂L/∂θ = -(∂p_in/∂θ) / p_in
-        gradient = -grad_in[param_indices] / (p_in + EPS)
-    else:  # Outside class
-        # ∂L/∂θ = -(∂p_out/∂θ) / p_out
-        gradient = -grad_out[param_indices] / (p_out + EPS)
-    
+
+    # Chain rule for binary cross-entropy (normalized, using raw expectations)
+    dpin_dθ  = grad_in[param_indices]
+    dpout_dθ = grad_out[param_indices]
+    if y == 0:
+        gradient = -(dpin_dθ  / (p_in_raw  + EPS)) + ((dpin_dθ + dpout_dθ) / (S_raw + EPS))
+    else:
+        gradient = -(dpout_dθ / (p_out_raw + EPS)) + ((dpin_dθ + dpout_dθ) / (S_raw + EPS))
     return float(loss), gradient
 
 # Global variables for worker processes
@@ -306,7 +292,7 @@ def main():
     # Dynamically import the correct data loader based on SHAPE
     _data_module = __import__(f"{SHAPE}_data", fromlist=[f"get_{SHAPE}_data"])
     get_data_func = getattr(_data_module, f"get_{SHAPE}_data")
-    X_train, X_test, y_train, y_test, boundary_path = get_data_func(200)
+    X_train, X_test, y_train, y_test, boundary_path = get_data_func(SAMPLES)
     
     # Create circuit without measurements for gradient computation
     print(f"Circuit: t={t}, m={m}, n={n}, r={r} -> {t+m+n*r+1} qubits")
@@ -385,6 +371,10 @@ def main():
         epoch_loss_acc = 0.0
         epoch_grads = []  # Collect gradients for gradient norm calculation
         
+        # Batch accumulation variables
+        grad_sum = np.zeros_like(theta)
+        k = 0
+        
         num_workers = 1 if pool is None else N_CPUS
         
         # Process data in chunks of size num_workers
@@ -398,16 +388,36 @@ def main():
                 # Parallel computation of gradients for the chunk
                 results = pool(delayed(compute_sample_loss_grad)(theta, idx) for idx in chunk_indices)
             
-            # Adam update for each sample in the processed chunk
+            # Accumulate gradients and losses
             for loss, grad in results:
-                step += 1
+                grad_sum += grad
+                k += 1
                 epoch_grads.append(grad)
-                m1 = beta1 * m1 + (1 - beta1) * grad
-                v1 = beta2 * v1 + (1 - beta2) * (grad**2)
-                m1_hat = m1 / (1 - beta1**step)
-                v1_hat = v1 / (1 - beta2**step)
-                theta -= lr * m1_hat / (np.sqrt(v1_hat) + 1e-8)
                 epoch_loss_acc += loss
+                
+                # Trigger Adam update every BATCH samples
+                if k == BATCH:
+                    step += 1
+                    grad_mean = grad_sum / k
+                    m1 = beta1 * m1 + (1 - beta1) * grad_mean
+                    v1 = beta2 * v1 + (1 - beta2) * (grad_mean**2)
+                    m1_hat = m1 / (1 - beta1**step)
+                    v1_hat = v1 / (1 - beta2**step)
+                    theta -= lr * m1_hat / (np.sqrt(v1_hat) + 1e-8)
+                    
+                    # Reset accumulators
+                    grad_sum = np.zeros_like(theta)
+                    k = 0
+        
+        # Flush leftovers at epoch end if partial batch remains
+        if k > 0:
+            step += 1
+            grad_mean = grad_sum / k
+            m1 = beta1 * m1 + (1 - beta1) * grad_mean
+            v1 = beta2 * v1 + (1 - beta2) * (grad_mean**2)
+            m1_hat = m1 / (1 - beta1**step)
+            v1_hat = v1 / (1 - beta2**step)
+            theta -= lr * m1_hat / (np.sqrt(v1_hat) + 1e-8)
 
         mean_epoch_loss = epoch_loss_acc / len(X_train)
         losses.append(mean_epoch_loss)
@@ -434,7 +444,7 @@ def main():
     plt.plot(range(1, len(losses)+1), losses, 'o-', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('Binary Cross-Entropy Loss')
-    plt.title(f'Training Loss (Custom SPQC {model_name})')
+    plt.title(f'Training Loss (SPQC {model_name})')
     plt.grid(True, alpha=0.3)
     plt.yscale('log')
     plt.tight_layout()
@@ -453,7 +463,7 @@ def main():
             visualize_decision_boundary(
                 spqc_model, initial_theta_snapshot, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
-                title=f'Initial Decision Boundary (Custom {model_name}) | Epochs: {args.epochs}',
+                title=f'Initial Decision Boundary ({model_name}) | Epochs: {args.epochs}',
                 resolution=args.boundary_resolution,
                 save_path=f'plots/initboundary_{model_name}.png'
             )
@@ -464,7 +474,7 @@ def main():
             visualize_decision_boundary(
                 spqc_model, theta, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
-                title=f'Final Decision Boundary (Custom {model_name}) | Epochs: {args.epochs}',
+                title=f'Final Decision Boundary ({model_name}) | Epochs: {args.epochs}',
                 resolution=args.boundary_resolution,
                 save_path=f'plots/finalboundary_{model_name}.png'
             )
