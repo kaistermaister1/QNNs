@@ -4,8 +4,6 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from collections import defaultdict
 from matplotlib.lines import Line2D
-import multiprocessing as mp
-from joblib import Parallel, delayed
 
 def wedge_onehot(points, m=3, center=(0.5, 0.5)):
     """Assigns points to 2**m angular wedges and returns a one-hot encoding."""
@@ -104,6 +102,12 @@ def evaluate_model(spqc_model, θ, test_features, test_labels_onehot, mode, titl
     print("="*50)
     return accuracy
 
+import os
+import multiprocessing as mp
+import numpy as np
+import matplotlib.pyplot as plt
+from joblib import Parallel, delayed
+
 def visualize_decision_boundary(
     spqc_model,
     θ,
@@ -116,107 +120,33 @@ def visualize_decision_boundary(
     xlim=(0.0, 1.0),
     ylim=(0.0, 1.0),
     boundary=None,          # <— keep it, but optional
-    n_jobs=None,            # kept for compatibility, but not used
+    n_jobs=None,
     cmap="RdYlBu_r",
     save_path=None,
-    chunk_size=None,        # NEW: optional chunking for memory management
 ):
     assert mode == 'binary', "This implementation currently supports mode='binary' only."
-    
-    # Import StatevectorEstimator here to avoid import issues
-    from qiskit_ibm_runtime import StatevectorEstimator
 
     # --- Mesh ---
     xs = np.linspace(xlim[0], xlim[1], resolution)
     ys = np.linspace(ylim[0], ylim[1], resolution)
     xx, yy = np.meshgrid(xs, ys)
     mesh_points = np.column_stack([xx.ravel(), yy.ravel()])
-    
-    print(f"Processing {len(mesh_points)} mesh points in single batch...")
 
-    # --- Step 1: Create one StatevectorEstimator ---
-    estimator = StatevectorEstimator()
+    # --- Parallel eval ---
+    if n_jobs is None:
+        n_jobs = mp.cpu_count()
 
-    # --- Step 2: Precompute parameter bookkeeping ---
-    params = list(spqc_model.circuit.parameters)
-    param_pos = {p: i for i, p in enumerate(params)}
-    
-    # Get input parameter indices
-    input_params = [p for p in params if p.name.startswith('zinput_theta')]
-    input_indices = [param_pos[p] for p in input_params]
-    
-    # Build base values vector with trainable parameters already filled
-    base_values = np.zeros(len(params))
-    for i, param_idx in enumerate(spqc_model.param_indices):
-        if i < len(θ):
-            base_values[param_idx] = θ[i]
+    half = (2 ** m) // 2  # first half -> p_out, second half -> p_in
 
-    # --- Step 3 & 4: Process mesh (with optional chunking) ---
-    P_out, P_in = spqc_model.projectors[0], spqc_model.projectors[1]
-    
-    # Determine if chunking is needed
-    if chunk_size is None:
-        # Auto-determine chunk size based on mesh size
-        # For very large meshes (>50k points), use chunking
-        if len(mesh_points) > 50000:
-            chunk_size = 25000  # Process 25k points at a time
-        else:
-            chunk_size = len(mesh_points)  # Process all at once
-    else:
-        # If chunk_size is explicitly provided, ensure it's not larger than total points
-        chunk_size = min(chunk_size, len(mesh_points))
-    
-    p_in_vals = []
-    
-    # Process in chunks
-    total_chunks = (len(mesh_points) - 1) // chunk_size + 1
-    for chunk_idx, chunk_start in enumerate(range(0, len(mesh_points), chunk_size)):
-        chunk_end = min(chunk_start + chunk_size, len(mesh_points))
-        chunk_points = mesh_points[chunk_start:chunk_end]
-        
-        if total_chunks > 1:
-            print(f"Processing chunk {chunk_idx + 1}/{total_chunks} ({len(chunk_points)} points)")
-        else:
-            print(f"Running estimator with {len(chunk_points)*2} pubs...")
-        
-        # Build pubs for this chunk
-        pubs = []
-        for point in chunk_points:
-            # Copy base values and set input parameters for this point
-            values_for_point = base_values.copy()
-            for i, input_idx in enumerate(input_indices):
-                if i < len(point):
-                    values_for_point[input_idx] = point[i]
-            
-            # Add two pubs for this point: (circuit, P_out, values) and (circuit, P_in, values)
-            pubs.append((spqc_model.circuit, P_out, values_for_point))
-            pubs.append((spqc_model.circuit, P_in, values_for_point))
+    def _p_in(point):
+        amps = spqc_model.forward(point, θ)
+        probs = np.abs(amps) ** 2
+        return probs[half:].sum()
 
-        # Run estimator for this chunk
-        result = estimator.run(pubs).result()
-
-        # Post-process results for this chunk
-        chunk_p_in_vals = []
-        for i in range(len(chunk_points)):
-            # Results come back in pairs: p_out at 2*i, p_in at 2*i+1
-            p_out_raw = float(result[2*i].data.evs)
-            p_in_raw = float(result[2*i+1].data.evs)
-            
-            # Compute normalized p_in (guard against zero sum)
-            total_prob = p_in_raw + p_out_raw
-            if total_prob > 1e-10:
-                p_in = p_in_raw / total_prob
-            else:
-                p_in = 0.5  # Default to uncertain if no signal
-            
-            chunk_p_in_vals.append(p_in)
-        
-        p_in_vals.extend(chunk_p_in_vals)
-
-    # Reshape to grid
+    p_in_vals = Parallel(n_jobs=n_jobs, backend="loky")(delayed(_p_in)(p) for p in mesh_points)
     Z = np.array(p_in_vals).reshape(xx.shape)
 
-    # --- Step 5: Plot as before ---
+    # --- Plot ---
     fig, ax = plt.subplots(figsize=(8, 7))
 
     # test data
