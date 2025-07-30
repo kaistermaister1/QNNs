@@ -1,0 +1,27 @@
+IRIS QNN Model Comparison Results
+==================================================
+
+Configuration:
+- Trials per model: 100
+- Max iterations: 100
+- Dataset: IRIS (3-class classification)
+
+Results Summary:
+------------------------------
+1. VQC ZZ+RA 4F (3-Class): 0.601 ± 0.084 (range: 0.400 - 0.833)
+2. VQC ZZ+ESU2 2F (3-Class): 0.616 ± 0.079 (range: 0.400 - 0.833)
+3. Siamese 4F (Binary Pair): 0.615 ± 0.118 (range: 0.292 - 0.875)
+4. Siamese 2F (Binary Pair): 0.518 ± 0.113 (range: 0.292 - 0.792)
+5. VQC Custom 4F (3-Class): 0.553 ± 0.091 (range: 0.300 - 0.733)
+6. VQC Custom 2F (3-Class): 0.660 ± 0.075 (range: 0.467 - 0.867)
+7. 2Q Siamese 2F (Binary Pair): 0.520 ± 0.107 (range: 0.250 - 0.750)
+
+Ranking by Mean Accuracy:
+------------------------------
+1. 6. VQC Custom 2F (3-Class): 0.660
+2. 2. VQC ZZ+ESU2 2F (3-Class): 0.616
+3. 3. Siamese 4F (Binary Pair): 0.615
+4. 1. VQC ZZ+RA 4F (3-Class): 0.601
+5. 5. VQC Custom 4F (3-Class): 0.553
+6. 7. 2Q Siamese 2F (Binary Pair): 0.520
+7. 4. Siamese 2F (Binary Pair): 0.518

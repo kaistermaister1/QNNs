@@ -3,7 +3,7 @@ import numpy as np
 from matplotlib.path import Path
 from sklearn.model_selection import train_test_split
 
-def create_star_boundary(center=(0.5, 0.5), outer_radius=0.3, inner_radius=0.15, num_points=5):
+def create_star_boundary(center=(0.5, 0.5), outer_radius=0.45, inner_radius=0.2, num_points=5):
     """Create a star-shaped boundary using Path."""
     angles = np.linspace(0, 2*np.pi, num_points*2, endpoint=False)
     
@@ -24,7 +24,7 @@ def create_star_boundary(center=(0.5, 0.5), outer_radius=0.3, inner_radius=0.15,
     
     return Path(vertices)
 
-def generate_dataset(num_points=1000):
+def generate_dataset(num_points=2000, condense=False):
     """Generate random points with balanced inside/outside distribution."""
     np.random.seed(42)  # For reproducibility
     
@@ -35,39 +35,109 @@ def generate_dataset(num_points=1000):
     num_inside = num_points // 2
     num_outside = num_points - num_inside  # Handle odd numbers
     
-    # Generate many random points to have enough inside and outside
-    num_candidates = max(2000, num_points * 10)  # Scale with desired points
-    candidate_points = np.random.uniform(0, 1, (num_candidates, 2))
-    
-    # Check which points are inside the star
-    inside_mask = star_path.contains_points(candidate_points)
-    
-    # Get points inside and outside
-    inside_candidates = candidate_points[inside_mask]
-    outside_candidates = candidate_points[~inside_mask]
-    
-    # Select the required number from each group
-    inside_points = inside_candidates[:num_inside] if len(inside_candidates) >= num_inside else inside_candidates
-    outside_points = outside_candidates[:num_outside] if len(outside_candidates) >= num_outside else outside_candidates
-    
-    # If we don't have enough points in either category, generate more
-    while len(inside_points) < num_inside or len(outside_points) < num_outside:
-        additional_points = np.random.uniform(0, 1, (1000, 2))
-        additional_inside_mask = star_path.contains_points(additional_points)
+    if condense:
+        # Generate condensed outside points close to star boundary
+        vertices = star_path.vertices[:-1]  # Remove duplicate last vertex
+        center = np.mean(vertices, axis=0)
         
-        if len(inside_points) < num_inside:
-            additional_inside = additional_points[additional_inside_mask]
-            inside_points = np.vstack([inside_points, additional_inside])[:num_inside]
+        # Generate inside points normally
+        inside_points = []
+        attempts = 0
+        while len(inside_points) < num_inside and attempts < num_inside * 50:
+            candidate = np.random.uniform(0, 1, 2)
+            if star_path.contains_points(np.array([candidate]))[0]:
+                inside_points.append(candidate)
+            attempts += 1
+        inside_points = np.array(inside_points)
         
-        if len(outside_points) < num_outside:
-            additional_outside = additional_points[~additional_inside_mask]
-            outside_points = np.vstack([outside_points, additional_outside])[:num_outside]
-    
+        # Generate outside points in uniform band around boundary
+        outside_points = []
+        attempts = 0
+        max_attempts = num_outside * 200
+        band_thickness = 0.05  # Fixed thickness of the band around star
+        
+        while len(outside_points) < num_outside and attempts < max_attempts:
+            # Generate random angle around the star
+            angle = np.random.uniform(0, 2*np.pi)
+            
+            # Find the distance from center to star boundary at this angle
+            # Sample multiple points along this ray to find boundary
+            ray_length = 0.5  # Maximum ray length
+            ray_points = []
+            for r in np.linspace(0, ray_length, 100):
+                x = center[0] + r * np.cos(angle)
+                y = center[1] + r * np.sin(angle)
+                ray_points.append([x, y])
+            
+            ray_points = np.array(ray_points)
+            inside_mask = star_path.contains_points(ray_points)
+            
+            # Find the boundary point (last inside point)
+            if np.any(inside_mask):
+                last_inside_idx = np.where(inside_mask)[0][-1]
+                boundary_distance = np.linalg.norm(ray_points[last_inside_idx] - center)
+            else:
+                # If no inside points found, use minimum distance
+                boundary_distance = 0.1
+            
+            # Generate point in band outside boundary
+            band_start = boundary_distance + 0.01  # Small gap from boundary
+            band_end = boundary_distance + band_thickness
+            
+            r = np.random.uniform(band_start, band_end)
+            candidate = center + r * np.array([np.cos(angle), np.sin(angle)])
+            
+            # Add small random jitter perpendicular to boundary
+            perp_angle = angle + np.pi/2
+            jitter_magnitude = np.random.uniform(0, 0.01)
+            jitter = jitter_magnitude * np.array([np.cos(perp_angle), np.sin(perp_angle)])
+            candidate = candidate + jitter
+            
+            # Check bounds and star containment
+            if (0 <= candidate[0] <= 1 and 0 <= candidate[1] <= 1 and 
+                not star_path.contains_points(np.array([candidate]))[0]):
+                outside_points.append(candidate)
+            
+            attempts += 1
+        
+        outside_points = np.array(outside_points) if outside_points else np.empty((0, 2))
+        
+    else:
+        # Standard generation
+        num_candidates = max(2000, num_points * 10)
+        candidate_points = np.random.uniform(0, 1, (num_candidates, 2))
+        
+        # Check which points are inside the star
+        inside_mask = star_path.contains_points(candidate_points)
+        
+        # Get points inside and outside
+        inside_candidates = candidate_points[inside_mask]
+        outside_candidates = candidate_points[~inside_mask]
+        
+        # Select the required number from each group
+        inside_points = inside_candidates[:num_inside] if len(inside_candidates) >= num_inside else inside_candidates
+        outside_points = outside_candidates[:num_outside] if len(outside_candidates) >= num_outside else outside_candidates
+        
+        # If we don't have enough points in either category, generate more
+        while len(inside_points) < num_inside or len(outside_points) < num_outside:
+            additional_points = np.random.uniform(0, 1, (1000, 2))
+            additional_inside_mask = star_path.contains_points(additional_points)
+            
+            if len(inside_points) < num_inside:
+                additional_inside = additional_points[additional_inside_mask]
+                inside_points = np.vstack([inside_points, additional_inside])[:num_inside]
+            
+            if len(outside_points) < num_outside:
+                additional_outside = additional_points[~additional_inside_mask]
+                outside_points = np.vstack([outside_points, additional_outside])[:num_outside]
+
     return inside_points, outside_points, star_path
 
-def create_labeled_dataset(num_points=100):
+
+
+def create_labeled_dataset(num_points=100, condense=False):
     """Create labeled dataset with scalar labels (0 or 1) and 80/20 split."""
-    inside_points, outside_points, star_path = generate_dataset(num_points)
+    inside_points, outside_points, star_path = generate_dataset(num_points, condense)
     
     # Combine all points
     all_points = np.vstack([inside_points, outside_points])
@@ -85,9 +155,12 @@ def create_labeled_dataset(num_points=100):
     
     return X_train, X_test, y_train, y_test, star_path
 
-def visualize_data(num_points=100):
+def visualize_data(num_points=100, data=None):
     """Visualize the star boundary dataset with train/test split."""
-    X_train, X_test, y_train, y_test, star_path = get_star_data(num_points)
+    if data is not None:
+        X_train, X_test, y_train, y_test, star_path = data
+    else:
+        X_train, X_test, y_train, y_test, star_path = get_star_data(num_points)
     
     # Labels are already scalar: 0 for inside, 1 for outside
     y_train_binary = y_train.astype(int)
@@ -163,12 +236,13 @@ def visualize_data(num_points=100):
     print(f"Scalar labels:")
     print(f"Inside: 0, Outside: 1")
 
-def get_star_data(num_points=100):
+def get_star_data(num_points=100, condense=False):
     """
     Get all star classification data without plotting.
     
     Args:
         num_points: Total number of data points to generate (default: 100)
+        condense: If True, concentrate outside points near star boundary (default: False)
     
     Returns:
         tuple: (X_train, X_test, y_train, y_test, star_path)
@@ -182,53 +256,13 @@ def get_star_data(num_points=100):
         - Inside star: 0
         - Outside star: 1
     """
-    return create_labeled_dataset(num_points)
+    return create_labeled_dataset(num_points, condense)
 
 if __name__ == "__main__":
-    # Demonstrate with different dataset sizes
-    print("Demonstrating configurable dataset sizes:")
-    print("=" * 50)
+    # Generate and visualize condensed star dataset
+    condensed_data = get_star_data(2000, condense=True)
+    X_train, X_test, y_train, y_test, star_path = condensed_data
+    print(f"Generated: {len(X_train)} train, {len(X_test)} test points (condensed outside points near boundary)")
     
-    # Test with different sizes
-    sizes_to_test = [50, 100, 200, 500]
-    
-    for size in sizes_to_test:
-        print(f"\nTesting with {size} total points:")
-        X_train, X_test, y_train, y_test, star_path = get_star_data(size)
-        
-        # Count inside/outside for each split
-        train_inside_count = np.sum(y_train == 0)
-        train_outside_count = np.sum(y_train == 1)
-        test_inside_count = np.sum(y_test == 0)
-        test_outside_count = np.sum(y_test == 1)
-        
-        print(f"  Training: {train_inside_count} inside, {train_outside_count} outside")
-        print(f"  Test: {test_inside_count} inside, {test_outside_count} outside")
-        print(f"  Total: {len(X_train) + len(X_test)} points")
-    
-    print("\n" + "=" * 50)
-    print("Showing visualization with 200 points:")
-    
-    # Show visualization with default size
-    visualize_data(200)
-    
-    # Get data for demonstration
-    X_train, X_test, y_train, y_test, star_path = get_star_data(200)
-    
-    # Demonstrate the data formats
-    print(f"\nExample data points:")
-    print(f"First training point: {X_train[0]} -> Scalar label: {y_train[0]}")
-    print(f"First test point: {X_test[0]} -> Scalar label: {y_test[0]}")
-    
-    # Show shapes
-    print(f"\nData shapes:")
-    print(f"X_train: {X_train.shape}, y_train: {y_train.shape}")
-    print(f"X_test: {X_test.shape}, y_test: {y_test.shape}")
-    
-    # Show label meaning
-    print(f"\nLabel encoding:")
-    print(f"Inside star: 0")
-    print(f"Outside star: 1")
-    
-    print(f"\nTo use custom dataset sizes in your code:")
-    print(f"train_features, test_features, train_labels, test_labels, boundary = get_star_data(500)")
+    # Visualize the condensed dataset
+    visualize_data(data=condensed_data)

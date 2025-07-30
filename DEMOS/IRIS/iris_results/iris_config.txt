@@ -1,0 +1,10 @@
+IRIS QNN Parallel Training Configuration
+=============================================
+Dataset: IRIS (3-class classification)
+Trials per model: 100
+Max iterations: 100
+CPUs used: 4
+Random seed: 4
+Training time: 3360.6 seconds
+Models trained: 7
+Total evaluations: 700

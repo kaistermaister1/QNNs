@@ -34,11 +34,12 @@ from star_eval import evaluate_model, visualize_decision_boundary
 
 # ─── Configuration ───
 RSEED = 4
-SHAPE = "star"
-SAMPLES = 5000
+SHAPE = "star"; CONDENSE = True  # Condense outside points near boundary
+SAMPLES = 2000
 BATCH = 1  # Batch size for gradient/loss calculation
+LOSS = "mse" # ce (cross-entropy) or mse (mean squared error)
 t, m, n, r = 0, 3, 2, 1
-model_name = f"{SHAPE}_t{t}_m{m}_n{n}_r{r}_s{RSEED}_{SAMPLES}samples_b{BATCH}"
+model_name = f"{SHAPE}_t{t}_m{m}_n{n}_r{r}_s{RSEED}_{SAMPLES}samples_b{BATCH}_{LOSS}{"_c"+ str(CONDENSE)[0] if (SHAPE == "star") else ""}"
 EPS = 1e-10  # Small epsilon for numerical stability
 
 
@@ -128,9 +129,23 @@ def create_binary_projectors(t: int, m: int, n: int, r: int) -> List[SparsePauli
 
 def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors, 
                              x: np.ndarray, y: int, theta: np.ndarray, 
-                             param_indices: List[int]) -> Tuple[float, np.ndarray]:
+                             param_indices: List[int], mode: str = "ce") -> Tuple[float, np.ndarray]:
     """
-    Compute binary cross-entropy loss and gradient for a single sample.
+    Compute loss and gradient for a single sample.
+    
+    Args:
+        estimator: Qiskit estimator for expectation value computation
+        gradient_calc: Gradient calculator
+        circuit: Quantum circuit
+        projectors: List of projection operators [P_out, P_in]
+        x: Input features
+        y: Target label (0 for inside, 1 for outside)
+        theta: Model parameters
+        param_indices: Indices of trainable parameters
+        mode: Loss function mode - "ce" or "mse"
+        
+    Returns:
+        Tuple of (loss_value, gradient_array)
     """
     # Create parameter values: [input_params..., model_params..., address_params...]
     params = list(circuit.parameters)
@@ -162,27 +177,68 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
     p_in_hat  = p_in_raw  / S
     p_out_hat = p_out_raw / S
 
-    # Binary cross-entropy loss (normalized)
-    if y == 0:  # Inside class
-        loss = -np.log(p_in_hat + EPS)
-    else:  # Outside class (y == 1)
-        loss = -np.log(p_out_hat + EPS)
-    
-    # Compute gradients  
-    circuits = [circuit, circuit]
-    observables = projectors  # [P_out, P_in]
-    parameter_values = [values, values]
-    grad_result = gradient_calc.run(circuits, observables, parameter_values).result()
-    grad_out = grad_result.gradients[0]
-    grad_in = grad_result.gradients[1]
+    if mode == "ce":
+        # Binary cross-entropy loss (normalized)
+        if y == 0:  # Inside class
+            loss = -np.log(p_in_hat + EPS)
+        else:  # Outside class (y == 1)
+            loss = -np.log(p_out_hat + EPS)
+        
+        # Compute gradients  
+        circuits = [circuit, circuit]
+        observables = projectors  # [P_out, P_in]
+        parameter_values = [values, values]
+        grad_result = gradient_calc.run(circuits, observables, parameter_values).result()
+        grad_out = grad_result.gradients[0]
+        grad_in = grad_result.gradients[1]
 
-    # Chain rule for binary cross-entropy (normalized, using raw expectations)
-    dpin_dθ  = grad_in[param_indices]
-    dpout_dθ = grad_out[param_indices]
-    if y == 0:
-        gradient = -(dpin_dθ  / (p_in_raw  + EPS)) + ((dpin_dθ + dpout_dθ) / (S_raw + EPS))
+        # Chain rule for binary cross-entropy (differentiate hat probabilities directly)
+        dpin_dθ  = grad_in[param_indices]
+        dpout_dθ = grad_out[param_indices]
+        
+        # If S is clamped, treat dS/dθ = 0
+        if S_raw > EPS:
+            dS_dθ = dpin_dθ + dpout_dθ
+        else:
+            dS_dθ = 0.0 * dpin_dθ  # same shape, all zeros
+        
+        # Compute derivatives of hat probabilities using quotient rule
+        dpin_hat_dθ = (dpin_dθ * S - p_in_raw * dS_dθ) / (S * S)
+        dpout_hat_dθ = (dpout_dθ * S - p_out_raw * dS_dθ) / (S * S)
+        
+        if y == 0:  # Inside class: gradient = -1/(p_in_hat + EPS) * d(p_in_hat)/dθ
+            gradient = -(dpin_hat_dθ / (p_in_hat + EPS))
+        else:  # Outside class: gradient = -1/(p_out_hat + EPS) * d(p_out_hat)/dθ
+            gradient = -(dpout_hat_dθ / (p_out_hat + EPS))
+
+    elif mode == "mse":
+        target = 1.0 if y == 0 else 0.0
+        loss = (p_in_hat - target)**2
+
+        circuits = [circuit, circuit]
+        observables = projectors  # [P_out, P_in]
+        parameter_values = [values, values]
+        grad_result = gradient_calc.run(circuits, observables, parameter_values).result()
+        grad_out = grad_result.gradients[0]
+        grad_in  = grad_result.gradients[1]
+
+        dpin_dθ  = grad_in[param_indices]
+        dpout_dθ = grad_out[param_indices]
+
+        # If S is clamped, treat dS/dθ = 0
+        if S_raw > EPS:
+            dS_dθ = dpin_dθ + dpout_dθ
+        else:
+            dS_dθ = 0.0 * dpin_dθ  # same shape, all zeros
+
+        # Consistent quotient rule with the *clipped* S
+        dpin_hat_dθ = (dpin_dθ * S - p_in_raw * dS_dθ) / (S * S)
+
+        gradient = 2.0 * (p_in_hat - target) * dpin_hat_dθ
+    
     else:
-        gradient = -(dpout_dθ / (p_out_raw + EPS)) + ((dpin_dθ + dpout_dθ) / (S_raw + EPS))
+        raise ValueError(f"Unknown mode: {mode}. Supported modes are 'ce' and 'mse'.")
+
     return float(loss), gradient
 
 # Global variables for worker processes
@@ -193,10 +249,11 @@ g_projectors = None
 g_param_indices = None
 g_X_train = None
 g_y_train = None
+g_mode = None
 
-def worker_init(circuit, projectors, param_indices, X_train, y_train):
+def worker_init(circuit, projectors, param_indices, X_train, y_train, mode="ce"):
     """Initialize worker process with shared objects"""
-    global g_estimator, g_gradient_calc, g_circuit, g_projectors, g_param_indices, g_X_train, g_y_train
+    global g_estimator, g_gradient_calc, g_circuit, g_projectors, g_param_indices, g_X_train, g_y_train, g_mode
     
     g_estimator = StatevectorEstimator()
     g_gradient_calc = ReverseEstimatorGradient(g_estimator)
@@ -205,6 +262,7 @@ def worker_init(circuit, projectors, param_indices, X_train, y_train):
     g_param_indices = param_indices
     g_X_train = X_train
     g_y_train = y_train
+    g_mode = mode
 
 def compute_sample_loss_grad(theta: np.ndarray, sample_idx: int) -> Tuple[float, np.ndarray]:
     """Compute loss and gradient for a single sample (worker function)"""
@@ -213,7 +271,7 @@ def compute_sample_loss_grad(theta: np.ndarray, sample_idx: int) -> Tuple[float,
     
     return compute_loss_and_gradient(
         g_estimator, g_gradient_calc, g_circuit, g_projectors,
-        x, y, theta, g_param_indices
+        x, y, theta, g_param_indices, g_mode
     )
 
 class SPQCModel:
@@ -287,12 +345,13 @@ class SPQCModel:
 def main():
     print(f"Custom SPQC Binary Classifier")
     print(f"CPUs: {N_CPUS}")
+    print(f"Loss mode: {LOSS}")
     
     # ─── Data Loading ───
     # Dynamically import the correct data loader based on SHAPE
     _data_module = __import__(f"{SHAPE}_data", fromlist=[f"get_{SHAPE}_data"])
     get_data_func = getattr(_data_module, f"get_{SHAPE}_data")
-    X_train, X_test, y_train, y_test, boundary_path = get_data_func(SAMPLES)
+    X_train, X_test, y_train, y_test, boundary_path = get_data_func(SAMPLES, condense=CONDENSE)
     
     # Create circuit without measurements for gradient computation
     print(f"Circuit: t={t}, m={m}, n={n}, r={r} -> {t+m+n*r+1} qubits")
@@ -347,14 +406,14 @@ def main():
     # Setup parallel processing
     if N_CPUS == 1:
         # Single process - initialize directly
-        worker_init(circuit, projectors, param_indices, X_train, y_train)
+        worker_init(circuit, projectors, param_indices, X_train, y_train, LOSS)
         pool = None
     else:
         # Multi-process
         pool = Parallel(
             n_jobs=N_CPUS,
             initializer=worker_init,
-            initargs=(circuit, projectors, param_indices, X_train, y_train),
+            initargs=(circuit, projectors, param_indices, X_train, y_train, LOSS),
             backend="multiprocessing",
             prefer="processes"
         )
@@ -443,8 +502,9 @@ def main():
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(losses)+1), losses, 'o-', linewidth=2)
     plt.xlabel('Epoch')
-    plt.ylabel('Binary Cross-Entropy Loss')
-    plt.title(f'Training Loss (SPQC {model_name})')
+    loss_label = 'Binary Cross-Entropy Loss' if LOSS == 'ce' else 'MSE Loss'
+    plt.ylabel(loss_label)
+    plt.title(f'Training Loss - {LOSS.upper()} (SPQC {model_name})')
     plt.grid(True, alpha=0.3)
     plt.yscale('log')
     plt.tight_layout()
@@ -463,7 +523,7 @@ def main():
             visualize_decision_boundary(
                 spqc_model, initial_theta_snapshot, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
-                title=f'Initial Decision Boundary ({model_name}) | Epochs: {args.epochs}',
+                title=f'Initial | LR: {args.lr} | Epochs: {args.epochs}',
                 resolution=args.boundary_resolution,
                 save_path=f'plots/initboundary_{model_name}.png'
             )
@@ -474,7 +534,7 @@ def main():
             visualize_decision_boundary(
                 spqc_model, theta, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
-                title=f'Final Decision Boundary ({model_name}) | Epochs: {args.epochs}',
+                title=f'Final | LR: {args.lr} | Epochs: {args.epochs}',
                 resolution=args.boundary_resolution,
                 save_path=f'plots/finalboundary_{model_name}.png'
             )
