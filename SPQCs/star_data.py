@@ -36,7 +36,7 @@ def generate_dataset(num_points=2000, condense=False):
     num_outside = num_points - num_inside  # Handle odd numbers
     
     if condense:
-        # Generate condensed outside points close to star boundary
+        # Generate condensed outside points: mix of concentrated near boundary and random distribution
         vertices = star_path.vertices[:-1]  # Remove duplicate last vertex
         center = np.mean(vertices, axis=0)
         
@@ -50,13 +50,17 @@ def generate_dataset(num_points=2000, condense=False):
             attempts += 1
         inside_points = np.array(inside_points)
         
-        # Generate outside points in uniform band around boundary
-        outside_points = []
+        # Split outside points: 70% concentrated near boundary, 40% randomly distributed
+        num_concentrated = int(num_outside * 0.7)
+        num_random = num_outside - num_concentrated
+        
+        # Generate concentrated points near boundary
+        concentrated_points = []
         attempts = 0
-        max_attempts = num_outside * 200
+        max_attempts = num_concentrated * 200
         band_thickness = 0.05  # Fixed thickness of the band around star
         
-        while len(outside_points) < num_outside and attempts < max_attempts:
+        while len(concentrated_points) < num_concentrated and attempts < max_attempts:
             # Generate random angle around the star
             angle = np.random.uniform(0, 2*np.pi)
             
@@ -96,11 +100,27 @@ def generate_dataset(num_points=2000, condense=False):
             # Check bounds and star containment
             if (0 <= candidate[0] <= 1 and 0 <= candidate[1] <= 1 and 
                 not star_path.contains_points(np.array([candidate]))[0]):
-                outside_points.append(candidate)
+                concentrated_points.append(candidate)
             
             attempts += 1
         
-        outside_points = np.array(outside_points) if outside_points else np.empty((0, 2))
+        # Generate random points outside the star
+        random_points = []
+        attempts = 0
+        max_attempts = num_random * 50
+        
+        while len(random_points) < num_random and attempts < max_attempts:
+            candidate = np.random.uniform(0, 1, 2)
+            if not star_path.contains_points(np.array([candidate]))[0]:
+                random_points.append(candidate)
+            attempts += 1
+        
+        # Combine concentrated and random points
+        concentrated_points = np.array(concentrated_points) if concentrated_points else np.empty((0, 2))
+        random_points = np.array(random_points) if random_points else np.empty((0, 2))
+        outside_points = np.vstack([concentrated_points, random_points]) if len(concentrated_points) > 0 and len(random_points) > 0 else (
+            concentrated_points if len(concentrated_points) > 0 else random_points
+        )
         
     else:
         # Standard generation
