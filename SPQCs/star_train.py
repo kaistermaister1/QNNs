@@ -1,4 +1,4 @@
-from star_data import get_star_data
+from data.star_data import get_star_data
 from star_spqc import create_spqc_circuit, create_random_weights, model, visualize_circuit
 from star_eval import evaluate_model, visualize_decision_boundary, wedge_onehot, visualize_class_data
 import numpy as np
@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import os
 
 # --- Configuration ---
+SHAPE = "star"                   # Shape for saving plots
 CLASSIFICATION_MODE = 'binary'  # Options: 'wedge' or 'binary'
 VISUALIZE_DATA = False          # Show a plot of the data before evaluation
 TRAIN_MODEL = True              # Set to False to skip training and only see random performance
@@ -100,15 +101,21 @@ if True:
 if VISUALIZE_DATA:
      visualize_class_data(train_features, train_labels_onehot, CLASSIFICATION_MODE, boundary, "Training Data Distribution")
 
+# --- Training Configuration ---
+epochs = 50  # Define epochs before first use
+
 print("\n--- Evaluating model with INITIAL RANDOM weights ---")
-evaluate_model(spqc_model, θ, test_features, test_labels_onehot, CLASSIFICATION_MODE, "Initial Performance")
-visualize_decision_boundary(spqc_model, θ, m, test_features, test_labels_onehot, CLASSIFICATION_MODE, boundary, "Initial Decision Boundary")
+initial_acc = evaluate_model(spqc_model, θ, test_features, test_labels_onehot, CLASSIFICATION_MODE, "Initial Performance")
+visualize_decision_boundary(spqc_model, θ, m, test_features, test_labels_onehot, CLASSIFICATION_MODE, 
+                          title="Initial Decision Boundary", boundary=boundary,
+                          testing_accuracy=initial_acc, epochs=epochs,
+                          sample_size=len(test_features))
      
 # --- Training ---
 if TRAIN_MODEL:
     print("\n--- Starting model training ---")
     m1, v1 = np.zeros_like(θ), np.zeros_like(θ)
-    beta1, beta2, alpha, epochs = 0.9, 0.999, 0.01, 50
+    beta1, beta2, alpha = 0.9, 0.999, 0.01
     
     # Track loss over epochs
     epoch_losses = []
@@ -139,7 +146,7 @@ if TRAIN_MODEL:
             print(f"Epoch {epoch}/{epochs} - Average Loss: {avg_epoch_loss:.6f}")
     
     # Create plots directory if it doesn't exist
-    plots_dir = "SPQCs/plots"
+    plots_dir = f"SPQCs/{SHAPE}"
     os.makedirs(plots_dir, exist_ok=True)
     
     # Plot and save loss curve
@@ -158,7 +165,10 @@ if TRAIN_MODEL:
     print(f"\nLoss plot saved to: {loss_plot_path}")
     
     print("\n--- Evaluating model with TRAINED weights ---")
-    evaluate_model(spqc_model, θ, test_features, test_labels_onehot, CLASSIFICATION_MODE, "Trained Performance")
-    visualize_decision_boundary(spqc_model, θ, m, test_features, test_labels_onehot, CLASSIFICATION_MODE, boundary, "Trained Decision Boundary")
+    final_acc = evaluate_model(spqc_model, θ, test_features, test_labels_onehot, CLASSIFICATION_MODE, "Trained Performance")
+    visualize_decision_boundary(spqc_model, θ, m, test_features, test_labels_onehot, CLASSIFICATION_MODE,
+                              title="Final Decision Boundary", boundary=boundary,
+                              testing_accuracy=final_acc, epochs=epochs,
+                              sample_size=len(test_features))
 else:
     print("\nTraining skipped.")

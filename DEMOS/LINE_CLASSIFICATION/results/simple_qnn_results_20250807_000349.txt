@@ -1,0 +1,26 @@
+Simple QNN Training Results
+========================================
+Timestamp: 2025-08-07 00:03:50
+
+Configuration:
+- Architecture: 2-qubit QNN
+- Feature map: Ry(2πx), Ry(2πy)
+- Ansatz: Ry(θ) + Rx(θ) on each qubit
+- Observable: ZZ projector
+- Loss: MSE (Mean Squared Error)
+- Optimizer: Adam with parameter shift
+
+Training:
+- Epochs: 15
+- Samples per epoch: 400 (all samples)
+- Weight updates per epoch: 400
+- Total weight updates: 6000
+- Learning rate: 0.001
+- Validation samples: 100
+
+Results:
+- Training accuracy: 0.6175 (61.75%)
+- Validation accuracy: 0.5900 (59.00%)
+- Final epoch loss: 0.227992
+- Initial epoch loss: 0.251078
+- Epoch loss improvement: 0.023086

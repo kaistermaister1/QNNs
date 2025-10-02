@@ -1,7 +1,7 @@
 """
-star_train_custom.py - Custom SPQC Training Implementation
-========================================================
-Binary classification of star data using SPQC with binary projectors and Adam optimizer.
+traditional_qnn_train.py - Custom QNN Training Implementation
+=============================================================
+Binary classification using traditional QNN (ZZFeatureMap + EfficientSU2) with cross-entropy loss and Adam optimizer.
 """
 
 import argparse
@@ -21,31 +21,29 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from qiskit import QuantumCircuit, transpile
+from qiskit.circuit.library import ZZFeatureMap, EfficientSU2
 from qiskit.primitives import StatevectorEstimator
 from qiskit_algorithms.gradients import ReverseEstimatorGradient
-from qiskit.quantum_info import SparsePauliOp, Statevector
+from qiskit.quantum_info import SparsePauliOp
 
 # ───────── project imports ─────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(ROOT))
-from star_spqc import create_spqc_circuit, create_random_weights
 from star_eval import evaluate_model, visualize_decision_boundary
 
 
-
 # ─── Configuration ───
-RSEED = 9
-SHAPE = "square"; CONDENSE = False  # Condense outside points near boundary
-SAMPLES = 3000
+RSEED = 69
+SHAPE = "circle"; CONDENSE = False  # Condense outside points near boundary
+SAMPLES = 256
 BATCH = 1  # Batch size for gradient/loss calculation
 LOSS = "ce" # ce (cross-entropy) or mse (mean squared error)
-t, m, n, r = 0, 3, 2, 1
-model_name = f"{SHAPE}_t{t}_m{m}_n{n}_r{r}_s{RSEED}_{SAMPLES}samples_b{BATCH}_{LOSS}{"_c"+ str(CONDENSE)[0] if (SHAPE == "star") else ""}"
+model_name = f"{SHAPE}_traditional_qnn_{RSEED}_{SAMPLES}samples_b{BATCH}_{LOSS}{"_c"+ str(CONDENSE)[0] if (SHAPE == "star") else ""}"
 EPS = 1e-10  # Small epsilon for numerical stability
 
 
 # ─── CLI Arguments ───
-parser = argparse.ArgumentParser("Custom SPQC Binary Classifier")
+parser = argparse.ArgumentParser("Traditional QNN Binary Classifier")
 parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
 parser.add_argument("--cpus", type=int, default=None, help="Number of CPUs (default: all available)")
 parser.add_argument("--lr", type=float, default=0.001, help="Learning rate for Adam optimizer")
@@ -58,87 +56,36 @@ args = parser.parse_args()
 # Resource configuration
 N_CPUS = args.cpus or mp.cpu_count()
 
-def create_binary_projectors(t: int, m: int, n: int, r: int) -> List[SparsePauliOp]:
+def create_binary_projectors() -> List[SparsePauliOp]:
     """
-    Create binary projection operators according to mathematical specification.
-    
-    Returns:
-        [P_out, P_in] where P_out projects to addresses 0-(2^m/2-1), P_in to (2^m/2)-(2^m-1)
+    Returns properly normalized projectors for a 2-qubit circuit:
+      P0 = |0><0| ⊗ I (projects first qubit to |0>, measures class 0)
+      P1 = |1><1| ⊗ I (projects first qubit to |1>, measures class 1)
     """
-    N = t + m + n*r + 1  # Total qubits
-    
-    # Basic projectors: |0⟩⟨0| = (I+Z)/2, |1⟩⟨1| = (I-Z)/2
+    # Single-qubit projectors: |0><0| = (I + Z) / 2, |1><1| = (I - Z) / 2
     p0 = SparsePauliOp("Z", coeffs=[0.5]) + SparsePauliOp("I", coeffs=[0.5])
     p1 = SparsePauliOp("I", coeffs=[0.5]) - SparsePauliOp("Z", coeffs=[0.5])
-    
-    def create_address_projector(address_states: List[int]) -> SparsePauliOp:
-        """Create projector that sums over multiple address states"""
-        projectors = []
-        
-        for addr_state in address_states:
-            proj_list = [None] * N
-            
-            # Term qubits projected to |0⟩
-            for i in range(t):
-                proj_list[i] = p0
-                
-            # Address qubits projected based on addr_state
-            for i in range(m):
-                q_idx = t + i
-                if ((addr_state >> i) & 1) == 0:
-                    proj_list[q_idx] = p0
-                else:
-                    proj_list[q_idx] = p1
-                    
-            # Data qubits projected to |0⟩
-            for i in range(n*r):
-                q_idx = t + m + i
-                proj_list[q_idx] = p0
-                
-            # Ancilla qubit projected to |0⟩
-            proj_list[t + m + n*r] = p0
-            
-            # Tensor product (reverse order for Qiskit little-endian)
-            rev_proj_list = proj_list[::-1]
-            full_projector = rev_proj_list[0]
-            for i in range(1, N):
-                full_projector = full_projector.tensor(rev_proj_list[i])
-            
-            projectors.append(full_projector.simplify())
-        
-        # Sum all projectors for this class
-        if len(projectors) == 1:
-            return projectors[0]
-        
-        result = projectors[0]
-        for proj in projectors[1:]:
-            result = result + proj
-        
-        return result.simplify()
-    
-    # S_out = {0,1,2,3}, S_in = {4,5,6,7} for m=3
-    num_addr_states = 2**m
-    half = num_addr_states // 2
-    
-    out_states = list(range(0, half))        # [0,1,2,3]
-    in_states = list(range(half, num_addr_states))  # [4,5,6,7]
-    
-    P_out = create_address_projector(out_states)
-    P_in = create_address_projector(in_states)
-    
-    return [P_out, P_in]
+
+    # Identity on second qubit
+    I2 = SparsePauliOp("I", coeffs=[1.0])
+
+    # Tensor products to form 2-qubit marginal projectors
+    P0 = p0.tensor(I2)   # projects first qubit to |0>, ignores second
+    P1 = p1.tensor(I2)   # projects first qubit to |1>, ignores second
+
+    return [P0, P1]
 
 def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors, 
                              x: np.ndarray, y: int, theta: np.ndarray, 
                              param_indices: List[int], mode: str = "ce") -> Tuple[float, np.ndarray]:
     """
-    Compute loss and gradient for a single sample.
+    Compute loss and gradient for a single sample using traditional QNN.
     
     Args:
         estimator: Qiskit estimator for expectation value computation
         gradient_calc: Gradient calculator
-        circuit: Quantum circuit
-        projectors: List of projection operators [P_out, P_in]
+        circuit: Quantum circuit (ZZFeatureMap + EfficientSU2)
+        projectors: List of projection operators [P0, P1]
         x: Input features
         y: Target label (0 for inside, 1 for outside)
         theta: Model parameters
@@ -148,18 +95,18 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
     Returns:
         Tuple of (loss_value, gradient_array)
     """
-    # Create parameter values: [input_params..., model_params..., address_params...]
+    # Create parameter values
     params = list(circuit.parameters)
     param_pos = {p: i for i, p in enumerate(params)}
     values = np.zeros(len(params))
 
-    # Set input parameters
-    input_params = [p for p in params if p.name.startswith('zinput_theta')]
+    # Set input parameters (ZZFeatureMap parameters)
+    input_params = [p for p in params if 'x' in p.name or 'input' in p.name]
     for i, param in enumerate(input_params):
         if i < len(x):
             values[param_pos[param]] = x[i]
 
-    # Set trainable parameters
+    # Set trainable parameters (EfficientSU2 parameters)
     for i, param_idx in enumerate(param_indices):
         if i < len(theta):
             values[param_idx] = theta[i]
@@ -169,73 +116,73 @@ def compute_loss_and_gradient(estimator, gradient_calc, circuit, projectors,
 
     # Get probabilities
     result = estimator.run(pubs).result()
-    p_out_raw = float(result[0].data.evs)
-    p_in_raw  = float(result[1].data.evs)
+    p0_raw = float(result[0].data.evs)
+    p1_raw = float(result[1].data.evs)
 
-    # For the loss only (clipping)
-    S_raw = p_in_raw + p_out_raw
-    S     = max(S_raw, EPS)
-    p_in_hat  = p_in_raw  / S
-    p_out_hat = p_out_raw / S
+    # Normalize probabilities (for numerical stability)
+    S_raw = p0_raw + p1_raw
+    S = max(S_raw, EPS)
+    p0_hat = p0_raw / S  # probability of class 0 (inside)
+    p1_hat = p1_raw / S  # probability of class 1 (outside)
 
     if mode == "ce":
-        # Binary cross-entropy loss (normalized)
+        # Binary cross-entropy loss
         if y == 0:  # Inside class
-            loss = -np.log(p_in_hat + EPS)
+            loss = -np.log(p0_hat + EPS)
         else:  # Outside class (y == 1)
-            loss = -np.log(p_out_hat + EPS)
+            loss = -np.log(p1_hat + EPS)
         
         # Compute gradients  
         circuits = [circuit, circuit]
-        observables = projectors  # [P_out, P_in]
+        observables = projectors  # [P0, P1]
         parameter_values = [values, values]
         grad_result = gradient_calc.run(circuits, observables, parameter_values).result()
-        grad_out = grad_result.gradients[0]
-        grad_in = grad_result.gradients[1]
+        grad_p0 = grad_result.gradients[0]
+        grad_p1 = grad_result.gradients[1]
 
-        # Chain rule for binary cross-entropy (differentiate hat probabilities directly)
-        dpin_dθ  = grad_in[param_indices]
-        dpout_dθ = grad_out[param_indices]
+        # Chain rule for binary cross-entropy
+        dp0_dθ = grad_p0[param_indices]
+        dp1_dθ = grad_p1[param_indices]
         
         # If S is clamped, treat dS/dθ = 0
         if S_raw > EPS:
-            dS_dθ = dpin_dθ + dpout_dθ
+            dS_dθ = dp0_dθ + dp1_dθ
         else:
-            dS_dθ = 0.0 * dpin_dθ  # same shape, all zeros
+            dS_dθ = 0.0 * dp0_dθ  # same shape, all zeros
         
-        # Compute derivatives of hat probabilities using quotient rule
-        dpin_hat_dθ = (dpin_dθ * S - p_in_raw * dS_dθ) / (S * S)
-        dpout_hat_dθ = (dpout_dθ * S - p_out_raw * dS_dθ) / (S * S)
+        # Compute derivatives of normalized probabilities using quotient rule
+        dp0_hat_dθ = (dp0_dθ * S - p0_raw * dS_dθ) / (S * S)
+        dp1_hat_dθ = (dp1_dθ * S - p1_raw * dS_dθ) / (S * S)
         
-        if y == 0:  # Inside class: gradient = -1/(p_in_hat + EPS) * d(p_in_hat)/dθ
-            gradient = -(dpin_hat_dθ / (p_in_hat + EPS))
-        else:  # Outside class: gradient = -1/(p_out_hat + EPS) * d(p_out_hat)/dθ
-            gradient = -(dpout_hat_dθ / (p_out_hat + EPS))
+        if y == 0:  # Inside class: gradient = -1/(p0_hat + EPS) * d(p0_hat)/dθ
+            gradient = -(dp0_hat_dθ / (p0_hat + EPS))
+        else:  # Outside class: gradient = -1/(p1_hat + EPS) * d(p1_hat)/dθ
+            gradient = -(dp1_hat_dθ / (p1_hat + EPS))
 
     elif mode == "mse":
         target = 1.0 if y == 0 else 0.0
-        loss = (p_in_hat - target)**2
+        loss = (p0_hat - target)**2
 
         circuits = [circuit, circuit]
-        observables = projectors  # [P_out, P_in]
+        observables = projectors  # [P0, P1]
         parameter_values = [values, values]
         grad_result = gradient_calc.run(circuits, observables, parameter_values).result()
-        grad_out = grad_result.gradients[0]
-        grad_in  = grad_result.gradients[1]
+        grad_p0 = grad_result.gradients[0]
+        grad_p1 = grad_result.gradients[1]
 
-        dpin_dθ  = grad_in[param_indices]
-        dpout_dθ = grad_out[param_indices]
+        dp0_dθ = grad_p0[param_indices]
+        dp1_dθ = grad_p1[param_indices]
 
         # If S is clamped, treat dS/dθ = 0
         if S_raw > EPS:
-            dS_dθ = dpin_dθ + dpout_dθ
+            dS_dθ = dp0_dθ + dp1_dθ
         else:
-            dS_dθ = 0.0 * dpin_dθ  # same shape, all zeros
+            dS_dθ = 0.0 * dp0_dθ  # same shape, all zeros
 
-        # Consistent quotient rule with the *clipped* S
-        dpin_hat_dθ = (dpin_dθ * S - p_in_raw * dS_dθ) / (S * S)
+        # Quotient rule
+        dp0_hat_dθ = (dp0_dθ * S - p0_raw * dS_dθ) / (S * S)
 
-        gradient = 2.0 * (p_in_hat - target) * dpin_hat_dθ
+        gradient = 2.0 * (p0_hat - target) * dp0_hat_dθ
     
     else:
         raise ValueError(f"Unknown mode: {mode}. Supported modes are 'ce' and 'mse'.")
@@ -275,8 +222,8 @@ def compute_sample_loss_grad(theta: np.ndarray, sample_idx: int) -> Tuple[float,
         x, y, theta, g_param_indices, g_mode
     )
 
-class SPQCModel:
-    """Wrapper model class to make our circuit compatible with star_eval.evaluate_model"""
+class TraditionalQNNModel:
+    """Wrapper model class to make our QNN compatible with star_eval.evaluate_model"""
     
     def __init__(self, circuit, projectors, param_indices):
         self.circuit = circuit
@@ -285,17 +232,14 @@ class SPQCModel:
         
     def forward(self, x, theta):
         """
-        Forward pass that returns address amplitudes compatible with star_eval.
-        
-        For projector-based approach, we need to compute the probabilities and
-        convert them to address amplitudes format expected by star_eval.
+        Forward pass that returns probabilities [p_in, p_out] compatible with star_eval.
         
         Args:
             x: Input features [x_coord, y_coord]
             theta: Parameter values
             
         Returns:
-            numpy.ndarray: Address amplitudes (simulated from probabilities)
+            numpy.ndarray: Probabilities [p_in, p_out] where p_in is prob of class 0, p_out is prob of class 1
         """
         estimator = StatevectorEstimator()
         
@@ -305,7 +249,7 @@ class SPQCModel:
         values = np.zeros(len(params))
         
         # Set input parameters
-        input_params = [p for p in params if p.name.startswith('zinput_theta')]
+        input_params = [p for p in params if 'x' in p.name or 'input' in p.name]
         for i, param in enumerate(input_params):
             if i < len(x):
                 values[param_pos[param]] = x[i]
@@ -319,32 +263,20 @@ class SPQCModel:
         pubs = [(self.circuit, self.projectors[0], values), (self.circuit, self.projectors[1], values)]
         
         result = estimator.run(pubs).result()
-        p_out = float(result[0].data.evs)
-        p_in = float(result[1].data.evs)
+        p0 = float(result[0].data.evs)  # probability of class 0 (inside)
+        p1 = float(result[1].data.evs)  # probability of class 1 (outside)
         
-        # Convert to address amplitudes format (8 addresses for m=3)
-        # p_out corresponds to addresses 0-3, p_in to addresses 4-7
-        addr_amps = np.zeros(8, dtype=complex)
+        # Normalize probabilities
+        total = p0 + p1 + EPS
+        p0_norm = p0 / total
+        p1_norm = p1 / total
         
-        # Distribute probabilities evenly among addresses in each class
-        # Convert probabilities to amplitudes (sqrt)
-        amp_out = np.sqrt(p_out / 4) if p_out > 0 else 0
-        amp_in = np.sqrt(p_in / 4) if p_in > 0 else 0
-        
-        # Fill address amplitudes
-        addr_amps[0:4] = amp_out  # outside class (addresses 0-3)
-        addr_amps[4:8] = amp_in   # inside class (addresses 4-7)
-        
-        addr_norm = np.linalg.norm(addr_amps)
-        if addr_norm > 0:
-            addr_amps = addr_amps / addr_norm
-        
-        return addr_amps
-
+        # Return in format expected by star_eval: [p_in, p_out]
+        return np.array([p0_norm, p1_norm])
 
 
 def main():
-    print(f"Custom SPQC Binary Classifier")
+    print(f"Traditional QNN Binary Classifier")
     print(f"CPUs: {N_CPUS}")
     print(f"Loss mode: {LOSS}")
     
@@ -357,43 +289,42 @@ def main():
     else:
         X_train, X_test, y_train, y_test, boundary_path = get_data_func(SAMPLES)
     
-    # Create circuit without measurements for gradient computation
-    print(f"Circuit: t={t}, m={m}, n={n}, r={r} -> {t+m+n*r+1} qubits")
-    frame = create_spqc_circuit(t=t, m=m, n=n, r=r)
-    circuit = QuantumCircuit(frame.num_qubits)
-    for inst in frame.data:
-        if inst.operation.name != "measure":
-            circuit.append(inst.operation, inst.qubits)
+    # Create traditional QNN circuit (ZZFeatureMap + EfficientSU2)
+    print(f"Circuit: ZZFeatureMap(2) + EfficientSU2(2) -> 2 qubits")
+    feature_map = ZZFeatureMap(2)
+    ansatz = EfficientSU2(2)
+    circuit = feature_map.compose(ansatz)
     
     # Transpile circuit
     circuit = transpile(circuit, optimization_level=1)
     params = list(circuit.parameters)
     
     # ─── Parameter Setup ───
-    # Get trainable parameter indices in the same order as create_random_weights
-    # (model parameters first, then address parameters)
-    params = list(circuit.parameters)
-    model_indices = [i for i, param in enumerate(params) if param.name.startswith('model')]
-    address_indices = [i for i, param in enumerate(params) if param.name.startswith('address_theta')]
-    param_indices = model_indices + address_indices  # model first, then address (matches create_random_weights)
+    # Get trainable parameter indices (EfficientSU2 parameters only)
+    param_indices = [i for i, param in enumerate(params) if 'θ' in param.name or 'ansatz' in param.name or param.name.startswith('θ')]
+    
+    # If no ansatz parameters found, use all non-input parameters
+    if not param_indices:
+        input_params = [p.name for p in params if 'x' in p.name or 'input' in p.name]
+        param_indices = [i for i, param in enumerate(params) if param.name not in input_params]
     
     # Initialize weights
     np.random.seed(RSEED)
-    theta = create_random_weights(circuit, seed=RSEED)
+    theta = np.random.uniform(-np.pi, np.pi, len(param_indices))
     initial_theta_snapshot = theta.copy()
     
     # ─── Projector Setup ───
-    projectors = create_binary_projectors(t, m, n, r)
+    projectors = create_binary_projectors()
     
     # ─── Model Wrapper Setup ───
-    spqc_model = SPQCModel(circuit, projectors, param_indices)
+    qnn_model = TraditionalQNNModel(circuit, projectors, param_indices)
     
     # Convert scalar labels to one-hot for binary classification (only for evaluation)
     # 0 (inside) -> [1, 0], 1 (outside) -> [0, 1]
     y_test_onehot = np.eye(2)[y_test.astype(int)]
     
     # ─── Initial Evaluation ───
-    initial_acc = evaluate_model(spqc_model, theta, X_test, y_test_onehot, 'binary', "Initial (Random Weights)")
+    initial_acc = evaluate_model(qnn_model, theta, X_test, y_test_onehot, 'binary', "Initial (Random Weights)")
     
     # ─── Training Setup ───
     print(f"\nStarting training for {args.epochs} epochs...")
@@ -497,7 +428,7 @@ def main():
     # ─── Final Evaluation ───
     print(f"\nTraining complete! Final loss: {losses[-1]:.4f}")
     
-    final_acc = evaluate_model(spqc_model, theta, X_test, y_test_onehot, 'binary', "Final (Trained Weights)")
+    final_acc = evaluate_model(qnn_model, theta, X_test, y_test_onehot, 'binary', "Final (Trained Weights)")
     
     # ─── Save Results ───
     os.makedirs(SHAPE, exist_ok=True)
@@ -508,7 +439,7 @@ def main():
     plt.xlabel('Epoch')
     loss_label = 'Binary Cross-Entropy Loss' if LOSS == 'ce' else 'MSE Loss'
     plt.ylabel(loss_label)
-    plt.title(f'Training Loss - {LOSS.upper()} (SPQC {model_name})')
+    plt.title(f'Training Loss - {LOSS.upper()} (Traditional QNN {model_name})')
     plt.grid(True, alpha=0.3)
     plt.yscale('log')
     plt.tight_layout()
@@ -525,7 +456,7 @@ def main():
             # --- Initial Boundary ---
             print("Visualizing initial boundary...")
             visualize_decision_boundary(
-                spqc_model, initial_theta_snapshot, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
+                qnn_model, initial_theta_snapshot, 2, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
                 title='Initial Decision Boundary',
                 resolution=args.boundary_resolution,
@@ -539,7 +470,7 @@ def main():
             # --- Final Boundary ---
             print("Visualizing final boundary...")
             visualize_decision_boundary(
-                spqc_model, theta, m, X_train, np.eye(2)[y_train.astype(int)], 'binary',
+                qnn_model, theta, 2, X_train, np.eye(2)[y_train.astype(int)], 'binary',
                 boundary=boundary_path,
                 title='Final Decision Boundary',
                 resolution=args.boundary_resolution,
@@ -567,4 +498,4 @@ def main():
     print(f"Weights saved to {weights_path}")
 
 if __name__ == "__main__":
-    main() 
+    main()

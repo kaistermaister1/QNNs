@@ -83,7 +83,7 @@ def create_spqc_circuit(t=0, m=2, n=2, r=1):
         sub_model.ry(thetas[0], 0)
         sub_model.rx(thetas[1], 0)
         sub_model.ry(thetas[2], 1)
-        sub_model.rx(thetas[3], 1)
+        sub_model.rx(thetas[3], 1)  
         sub_models.append(sub_model.to_gate(label=f"model{i}"))
         
         # === EFFICIENTSU2-LIKE ANSATZ ===

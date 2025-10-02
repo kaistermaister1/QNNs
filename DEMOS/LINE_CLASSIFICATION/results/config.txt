@@ -1,9 +1,0 @@
-QNN Parallel Training Configuration
-========================================
-Trials per model: 100
-Samples per trial: 50
-Max iterations: 60
-CPUs used: 4
-Random seed: 4
-Training time: 218.8 seconds
-Total model runs: 400

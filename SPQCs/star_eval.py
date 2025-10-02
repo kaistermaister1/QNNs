@@ -123,6 +123,9 @@ def visualize_decision_boundary(
     n_jobs=None,
     cmap="RdYlBu_r",
     save_path=None,
+    testing_accuracy=None,  # New parameter for testing accuracy
+    epochs=None,           # New parameter for number of epochs
+    sample_size=None,      # New parameter for sample size
 ):
     assert mode == 'binary', "This implementation currently supports mode='binary' only."
 
@@ -184,7 +187,27 @@ def visualize_decision_boundary(
     ax.set_title(title)
     ax.grid(alpha=0.2)
     ax.legend(loc='upper right')
-    fig.tight_layout()
+    
+    # Add testing information below the plot if provided
+    if testing_accuracy is not None or epochs is not None or sample_size is not None:
+        info_text = []
+        if testing_accuracy is not None:
+            info_text.append(f"Testing Accuracy: {testing_accuracy:.4f} ({testing_accuracy*100:.2f}%)")
+        if epochs is not None:
+            info_text.append(f"Epochs: {epochs}")
+        if sample_size is not None:
+            info_text.append(f"Sample Size: {sample_size}")
+        
+        # Add text below the plot
+        info_string = " | ".join(info_text)
+        fig.text(0.5, 0.02, info_string, ha='center', va='bottom', fontsize=10, 
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgray', alpha=0.8))
+        
+        # Adjust layout to make room for the text
+        fig.tight_layout()
+        fig.subplots_adjust(bottom=0.12)
+    else:
+        fig.tight_layout()
 
     if save_path is not None:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)

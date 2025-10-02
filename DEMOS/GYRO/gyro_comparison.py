@@ -31,8 +31,8 @@ os.makedirs("plots", exist_ok=True)
 
 
 # Configuration
-NUM_TRIALS = 1
-MAX_ITER = 80
+NUM_TRIALS = 5  # Reduced for faster testing
+MAX_ITER = 20  # Reduced iterations
 NUM_FEATURES = 3  # Number of features to select using FS1
 NUM_TRAIN_SAMPLES = 180  # Number of samples to use for training (remaining used for testing)
 OPTIMIZER = 'SLSQP'  # Options: 'SLSQP', 'COBYLA'
@@ -42,12 +42,70 @@ OPTIMIZER = 'SLSQP'  # Options: 'SLSQP', 'COBYLA'
 
 # --- Helper Functions ---
 
+# Global variables for tracking training progress
+loss_history = []
+iteration_count = 0
+current_pbar = None
+
+def loss_callback(weights):
+    """Callback function to track iterations during training."""
+    global iteration_count, current_pbar
+    iteration_count += 1
+    
+    # Update progress bar if it exists
+    if current_pbar is not None:
+        current_pbar.set_description(f"Epoch {iteration_count}")
+        current_pbar.update(1)
+    
+    return False  # Continue optimization
+
+def plot_iteration_progress(all_iteration_histories, model_names, trial_idx=None):
+    """Plot iteration progress for all models."""
+    plt.figure(figsize=(12, 8))
+    
+    colors = ['blue', 'red', 'green']
+    for i, (iteration_histories, model_name) in enumerate(zip(all_iteration_histories, model_names)):
+        if trial_idx is not None:
+            # Plot single trial
+            if i < len(iteration_histories) and trial_idx < len(iteration_histories[i]):
+                iterations = list(range(1, iteration_histories[i][trial_idx] + 1))
+                plt.plot(iterations, color=colors[i], alpha=0.8, 
+                        label=f'Model {i+1}: {model_name.split(".")[1].split()[0]}')
+        else:
+            # Plot all trials
+            if iteration_histories:
+                for trial_idx_inner, trial_iterations in enumerate(iteration_histories):
+                    iterations = list(range(1, trial_iterations + 1))
+                    plt.plot(iterations, [1] * len(iterations), color=colors[i], alpha=0.3, linewidth=1)
+                
+                # Plot mean iterations
+                mean_iterations = np.mean(iteration_histories)
+                plt.axhline(y=1, xmin=0, xmax=mean_iterations/MAX_ITER, color=colors[i], linewidth=3, 
+                           label=f'Model {i+1}: {model_name.split(".")[1].split()[0]} (avg: {mean_iterations:.1f} iters)')
+    
+    plt.xlabel('Iteration', fontsize=12)
+    plt.ylabel('Training Progress', fontsize=12)
+    if trial_idx is not None:
+        plt.title(f'Training Iteration Progress - Trial {trial_idx + 1}', fontsize=14, fontweight='bold')
+        filename = f'plots/iteration_progress_trial_{trial_idx + 1}.png'
+    else:
+        plt.title('Training Iteration Progress - All Models', fontsize=14, fontweight='bold')
+        filename = 'plots/iteration_progress_comparison.png'
+    
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.xlim(0, MAX_ITER)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"📈 Iteration progress saved to {filename}")
+
 def get_optimizer(optimizer_name, max_iter):
     """Get optimizer object based on configuration."""
     if optimizer_name.upper() == 'SLSQP':
-        return SLSQP(maxiter=max_iter)
+        return SLSQP(maxiter=max_iter, callback=loss_callback)
     elif optimizer_name.upper() == 'COBYLA':
-        return COBYLA(maxiter=max_iter)
+        return COBYLA(maxiter=max_iter, callback=loss_callback)
     else:
         raise ValueError(f"Unsupported optimizer: {optimizer_name}. Options: 'SLSQP', 'COBYLA'")
 
@@ -145,6 +203,7 @@ def run_model_1(sampler, estimator, num_features=4, num_train_samples=None, num_
     trials_to_run = num_trials if num_trials is not None else NUM_TRIALS
     
     model1_accuracies = []
+    model1_iteration_histories = []
     train_features, test_features, train_labels, test_labels = load_and_prep_data(
         num_features=num_features, feature_selection_method='FS1', num_train_samples=num_train_samples
     )
@@ -179,27 +238,41 @@ def run_model_1(sampler, estimator, num_features=4, num_train_samples=None, num_
             f.write(circuit_text)
         print(f"✅ Circuit text saved to {circuit_filename}")
 
-    # Training loop with progress bar - train on same data, test on same test set
-    for trial in tqdm(range(trials_to_run), desc="Training Progress", ncols=80):
-        classifier = VQC(
-            sampler=sampler,
-            feature_map=feature_map,
-            ansatz=ansatz,
-            loss=model1_loss,
-            optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
-        )
+    # Training loop with nested progress bars
+    for trial in tqdm(range(trials_to_run), desc="Model 1 Trials", ncols=80, position=0):
+        # Reset iteration tracking for this trial
+        global iteration_count, current_pbar
+        iteration_count = 0
         
-        classifier.fit(train_features, train_labels)
+        # Create nested progress bar for epochs within this trial
+        with tqdm(total=MAX_ITER, desc=f"Trial {trial+1} Epochs", ncols=80, position=1, leave=False) as epoch_pbar:
+            current_pbar = epoch_pbar
+            
+            classifier = VQC(
+                sampler=sampler,
+                feature_map=feature_map,
+                ansatz=ansatz,
+                loss=model1_loss,
+                optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
+            )
+            
+            classifier.fit(train_features, train_labels)
+            
+            # Reset the global progress bar reference
+            current_pbar = None
+        
+        # Store the iteration count for this trial
+        model1_iteration_histories.append(iteration_count)
         
         # Calculate accuracy on both training and testing data
         train_accuracy = classifier.score(train_features, train_labels)
         test_accuracy = classifier.score(test_features, test_labels)
         
-        print(f"Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f}")
+        print(f"Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f} ({iteration_count} epochs)")
         
         model1_accuracies.append(test_accuracy)
 
-    return model1_accuracies, f'1. VQC ZZ+EfficientSU2 FS1-{num_features}F\n({model1_entanglement} entanglement, {model1_loss} loss)'
+    return model1_accuracies, model1_iteration_histories, f'1. VQC ZZ+EfficientSU2 FS1-{num_features}F\n({model1_entanglement} entanglement, {model1_loss} loss)'
 
 # ============================================================================
 # MODEL 2: VQC with ZZFeatureMap + Custom 6W ansatz
@@ -212,6 +285,7 @@ def run_model_2(sampler, estimator, num_features=4, num_train_samples=None, num_
     trials_to_run = num_trials if num_trials is not None else NUM_TRIALS
     
     model2_accuracies = []
+    model2_iteration_histories = []
     train_features, test_features, train_labels, test_labels = load_and_prep_data(
         num_features=num_features, feature_selection_method='FS1', num_train_samples=num_train_samples
     )
@@ -260,27 +334,41 @@ def run_model_2(sampler, estimator, num_features=4, num_train_samples=None, num_
             f.write(circuit_text)
         print(f"✅ Circuit text saved to {circuit_filename}")
 
-    # Training loop with progress bar - train on same data, test on same test set
-    for trial in tqdm(range(trials_to_run), desc="Model 2 Training", ncols=80):
-        classifier = VQC(
-            sampler=sampler,
-            feature_map=feature_map,
-            ansatz=ansatz,
-            loss=model2_loss,
-            optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
-        )
+    # Training loop with nested progress bars
+    for trial in tqdm(range(trials_to_run), desc="Model 2 Trials", ncols=80, position=0):
+        # Reset iteration tracking for this trial
+        global iteration_count, current_pbar
+        iteration_count = 0
         
-        classifier.fit(train_features, train_labels)
+        # Create nested progress bar for epochs within this trial
+        with tqdm(total=MAX_ITER, desc=f"Trial {trial+1} Epochs", ncols=80, position=1, leave=False) as epoch_pbar:
+            current_pbar = epoch_pbar
+            
+            classifier = VQC(
+                sampler=sampler,
+                feature_map=feature_map,
+                ansatz=ansatz,
+                loss=model2_loss,
+                optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
+            )
+            
+            classifier.fit(train_features, train_labels)
+            
+            # Reset the global progress bar reference
+            current_pbar = None
+        
+        # Store the iteration count for this trial
+        model2_iteration_histories.append(iteration_count)
         
         # Calculate accuracy on both training and testing data
         train_accuracy = classifier.score(train_features, train_labels)
         test_accuracy = classifier.score(test_features, test_labels)
         
-        print(f"Model 2 - Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f}")
+        print(f"Model 2 - Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f} ({iteration_count} epochs)")
         
         model2_accuracies.append(test_accuracy)
 
-    return model2_accuracies, f'2. VQC ZZ+Custom6W FS1-{num_features}F\n(RY-RZ-RX per qubit, {model2_loss} loss)'
+    return model2_accuracies, model2_iteration_histories, f'2. VQC ZZ+Custom6W FS1-{num_features}F\n(RY-RZ-RX per qubit, {model2_loss} loss)'
 
 # ============================================================================
 # MODEL 3: VQC with ZZFeatureMap + Y gates + Custom 6W ansatz
@@ -293,6 +381,7 @@ def run_model_3(sampler, estimator, num_features=4, num_train_samples=None, num_
     trials_to_run = num_trials if num_trials is not None else NUM_TRIALS
     
     model3_accuracies = []
+    model3_iteration_histories = []
     train_features, test_features, train_labels, test_labels = load_and_prep_data(
         num_features=num_features, feature_selection_method='FS1', num_train_samples=num_train_samples
     )
@@ -352,27 +441,41 @@ def run_model_3(sampler, estimator, num_features=4, num_train_samples=None, num_
             f.write(circuit_text)
         print(f"✅ Circuit text saved to {circuit_filename}")
 
-    # Training loop with progress bar - train on same data, test on same test set
-    for trial in tqdm(range(trials_to_run), desc="Model 3 Training", ncols=80):
-        classifier = VQC(
-            sampler=sampler,
-            feature_map=feature_map,
-            ansatz=ansatz,
-            loss=model3_loss,
-            optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
-        )
+    # Training loop with nested progress bars
+    for trial in tqdm(range(trials_to_run), desc="Model 3 Trials", ncols=80, position=0):
+        # Reset iteration tracking for this trial
+        global iteration_count, current_pbar
+        iteration_count = 0
         
-        classifier.fit(train_features, train_labels)
+        # Create nested progress bar for epochs within this trial
+        with tqdm(total=MAX_ITER, desc=f"Trial {trial+1} Epochs", ncols=80, position=1, leave=False) as epoch_pbar:
+            current_pbar = epoch_pbar
+            
+            classifier = VQC(
+                sampler=sampler,
+                feature_map=feature_map,
+                ansatz=ansatz,
+                loss=model3_loss,
+                optimizer=get_optimizer(OPTIMIZER, MAX_ITER),
+            )
+            
+            classifier.fit(train_features, train_labels)
+            
+            # Reset the global progress bar reference
+            current_pbar = None
+        
+        # Store the iteration count for this trial
+        model3_iteration_histories.append(iteration_count)
         
         # Calculate accuracy on both training and testing data
         train_accuracy = classifier.score(train_features, train_labels)
         test_accuracy = classifier.score(test_features, test_labels)
         
-        print(f"Model 3 - Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f}")
+        print(f"Model 3 - Trial {trial+1}/{trials_to_run} - Train: {train_accuracy:.4f}, Test: {test_accuracy:.4f} ({iteration_count} epochs)")
         
         model3_accuracies.append(test_accuracy)
 
-    return model3_accuracies, f'3. VQC ZZ+Y+Custom6W FS1-{num_features}F\n(ZZ+Y feature map, RY-RZ-RX ansatz, {model3_loss} loss)'
+    return model3_accuracies, model3_iteration_histories, f'3. VQC ZZ+Y+Custom6W FS1-{num_features}F\n(ZZ+Y feature map, RY-RZ-RX ansatz, {model3_loss} loss)'
 
 # ============================================================================
 # RESULTS ANALYSIS AND VISUALIZATION
@@ -515,7 +618,7 @@ def main():
 
     if args.model:
         # Run a single specified model
-        accuracies, model_name = model_runners[args.model - 1](sampler, estimator, num_features=NUM_FEATURES, num_train_samples=NUM_TRAIN_SAMPLES, num_trials=num_trials)
+        accuracies, iteration_histories, model_name = model_runners[args.model - 1](sampler, estimator, num_features=NUM_FEATURES, num_train_samples=NUM_TRAIN_SAMPLES, num_trials=num_trials)
         
         # Display single model results
         mean_acc = np.mean(accuracies)
@@ -538,17 +641,26 @@ def main():
         plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"📊 Saved accuracy histogram to {plot_filename}")
+        
+        # Create iteration progress plot for single model
+        if iteration_histories:
+            plot_iteration_progress([iteration_histories], [model_name])
 
     else:
         # Run all models and perform comparison
         all_accuracies = []
+        all_iteration_histories = []
         all_model_names = []
         for runner in model_runners:
-            accuracies, model_name = runner(sampler, estimator, num_features=NUM_FEATURES, num_train_samples=NUM_TRAIN_SAMPLES, num_trials=num_trials)
+            accuracies, iteration_histories, model_name = runner(sampler, estimator, num_features=NUM_FEATURES, num_train_samples=NUM_TRAIN_SAMPLES, num_trials=num_trials)
             all_accuracies.append(accuracies)
+            all_iteration_histories.append(iteration_histories)
             all_model_names.append(model_name)
         
         analyze_and_visualize_results(all_accuracies, all_model_names, num_trials)
+        
+        # Create iteration progress comparison plot
+        plot_iteration_progress(all_iteration_histories, all_model_names)
 
     print(f"✨ Study completed!")
 
